@@ -1,0 +1,64 @@
+# File: initial-setup/ansible/grafana_container.yml
+- hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: "Grafana | Check for existing CT by name"
+      shell: pct list | grep " {{ service_config.name }} " | awk '{print $1}'
+      register: existing_ctid
+      changed_when: false
+
+    - name: "Grafana | Get next free CT ID"
+      shell: pvesh get /cluster/nextid --output-format json | jq -r '.'
+      register: next_ctid
+      when: existing_ctid.stdout == ""
+      changed_when: false
+
+    - name: "Grafana | Set CTID variable"
+      set_fact:
+        grafana_target_id: "{{ existing_ctid.stdout if existing_ctid.stdout != '' else next_ctid.stdout }}"
+
+    - name: Create Grafana LXC container using community script
+      shell: >
+        bash -c "$(wget -qLO - https://github.com/community-scripts/ProxmoxVE/raw/main/ct/grafana.sh)"
+      args:
+        warn: false
+      environment:
+        PVE_NODE: "{{ inventory_hostname }}"
+        CTID: "{{ grafana_target_id }}"
+        HOSTNAME: "{{ service_config.hostname }}"
+      register: grafana_result
+      ignore_errors: yes
+
+    - name: Ensure Grafana container is started
+      shell: pct start {{ grafana_target_id }}
+      when: grafana_result is succeeded
+
+    - name: "Grafana | Create data directories on host"
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: homelab
+        group: homelab
+        mode: '0755'
+      loop:
+        - "/var/lib/homelab-data/grafana/etc"
+        - "/var/lib/homelab-data/grafana/lib"
+
+    - name: "Grafana | Migrate default config if host dir empty"
+      shell: |
+        # Check if host dir is empty
+        if [ -z "$(ls -A /var/lib/homelab-data/grafana/etc)" ]; then
+           # Copy /etc/grafana from container to host
+           pct exec {{ grafana_target_id }} -- tar cf - -C /etc/grafana . | tar xf - -C /var/lib/homelab-data/grafana/etc
+           chown -R homelab:homelab /var/lib/homelab-data/grafana/etc
+        fi
+      when: grafana_result is succeeded
+
+    - name: "Grafana | Bind Mount directories"
+      shell: |
+        # mp0: Config (etc), mp1: Data (lib)
+        pct set {{ grafana_target_id }} \
+          -mp0 /var/lib/homelab-data/grafana/etc,mp=/etc/grafana \
+          -mp1 /var/lib/homelab-data/grafana/lib,mp=/var/lib/grafana
+        pct reboot {{ grafana_target_id }}
+      when: grafana_result is succeeded

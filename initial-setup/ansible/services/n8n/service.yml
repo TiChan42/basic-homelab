@@ -1,0 +1,49 @@
+# File: initial-setup/ansible/n8n_container.yml
+- hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: "n8n | Check for existing CT by name"
+      shell: pct list | grep " {{ service_config.name }} " | awk '{print $1}'
+      register: existing_ctid
+      changed_when: false
+
+    - name: "n8n | Get next free CT ID"
+      shell: pvesh get /cluster/nextid --output-format json | jq -r '.'
+      register: next_ctid
+      when: existing_ctid.stdout == ""
+      changed_when: false
+
+    - name: "n8n | Set CTID variable"
+      set_fact:
+        n8n_target_id: "{{ existing_ctid.stdout if existing_ctid.stdout != '' else next_ctid.stdout }}"
+
+    - name: Create n8n LXC container using community script
+      shell: >
+        bash -c "$(wget -qLO - https://github.com/community-scripts/ProxmoxVE/raw/main/ct/n8n.sh)"
+      args:
+        warn: false
+      environment:
+        PVE_NODE: "{{ inventory_hostname }}"
+        CTID: "{{ n8n_target_id }}"
+        HOSTNAME: "{{ service_config.hostname }}"
+      register: n8n_result
+      ignore_errors: yes
+
+    - name: Ensure n8n container is started
+      shell: pct start {{ n8n_target_id }}
+      when: n8n_result is succeeded
+
+    - name: "n8n | Create data directory on host"
+      file:
+        path: "/var/lib/homelab-data/n8n"
+        state: directory
+        owner: homelab
+        group: homelab
+        mode: '0755'
+
+    - name: "n8n | Bind Mount data directory"
+      shell: |
+        # Mount host dir to /root/.n8n (standard data dir)
+        pct set {{ n8n_target_id }} -mp0 /var/lib/homelab-data/n8n,mp=/root/.n8n
+        pct reboot {{ n8n_target_id }}
+      when: n8n_result is succeeded

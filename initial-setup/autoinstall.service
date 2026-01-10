@@ -1,0 +1,12 @@
+[Unit]
+Description=Automated Proxmox Installation
+After=network.target
+
+[Service]
+ExecStart=/autoinstall_proxmox.sh
+Type=oneshot
+StandardOutput=tty
+StandardError=tty
+
+[Install]
+WantedBy=multi-user.target

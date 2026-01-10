@@ -1,0 +1,54 @@
+# File: initial-setup/ansible/nodered_container.yml
+- hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: "NodeRED | Check for existing CT by name"
+      shell: pct list | grep " {{ service_config.name }} " | awk '{print $1}'
+      register: existing_ctid
+      changed_when: false
+
+    - name: "NodeRED | Get next free CT ID"
+      shell: pvesh get /cluster/nextid --output-format json | jq -r '.'
+      register: next_ctid
+      when: existing_ctid.stdout == ""
+      changed_when: false
+
+    - name: "NodeRED | Set CTID variable"
+      set_fact:
+        nodered_target_id: "{{ existing_ctid.stdout if existing_ctid.stdout != '' else next_ctid.stdout }}"
+
+    - name: Create Node-RED LXC container using community script
+      shell: >
+        bash -c "$(wget -qLO - https://github.com/community-scripts/ProxmoxVE/raw/main/ct/node-red.sh)"
+      args:
+        warn: false
+      environment:
+        PVE_NODE: "{{ inventory_hostname }}"
+        CTID: "{{ nodered_target_id }}"
+        HOSTNAME: "{{ service_config.hostname }}"
+      register: nr_result
+      ignore_errors: yes
+
+    - name: Ensure Node-RED container is started
+      shell: pct start {{ nodered_target_id }}
+      when: nr_result is succeeded
+
+    - name: "NodeRED | Create data directory on host"
+      file:
+        path: "/var/lib/homelab-data/nodered"
+        state: directory
+        owner: homelab
+        group: homelab
+        mode: '0755'
+
+    - name: "NodeRED | Bind Mount data directory"
+      shell: |
+        # Mount host dir to /root/.node-red (standard data dir for root install)
+        # We assume the community script installs as root or we map to the right user home
+        pct set {{ nodered_target_id }} -mp0 /var/lib/homelab-data/nodered,mp=/root/.node-red
+        pct reboot {{ nodered_target_id }}
+      when: nr_result is succeeded
+
+    - name: (Optional) Install Home Assistant nodes in Node-RED
+      shell: pct exec {{ nodered_target_id }} -- npm install -g node-red-contrib-home-assistant-websocket
+      when: nr_result is succeeded
