@@ -1,0 +1,21 @@
+# ansible-playbooks/vars.example.yml
+
+# Repository values
+repo_url: "https://github.com/TiChan42/basic-homelab"  # Replace with actual repo URL
+repo_path: "{{ playbook_dir }}/../../"  # Dynamically set to the parent directory of ansible-playbooks
+
+# Variables for mount-persistent-storage.yml
+mount_persistent_storage_nas_ip: "YOUR_NAS_IP"
+mount_persistent_storage_nas_export: "/export/YOUR_EXPORT_PATH"
+mount_persistent_storage_mount_point: "/mnt/nas/services"
+mount_persistent_storage_nfs_opts: "rw,vers=4.1,noatime,_netdev,nofail,timeo=600,retrans=2"
+
+# Variables for check-mount.yml
+check_mount_nfs_script_path: "/usr/local/bin/check_nfs_mount.sh"
+check_mount_nfs_cron_minute: "*/1" # every minute
+
+# Variables for setup-auto-deployment.yml
+polling_script_path: "/usr/local/bin/homelab_auto_deployment.sh"
+polling_cron_name: "homelab-auto-deployment"
+polling_minute: 0
+polling_hour: 3

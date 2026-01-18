@@ -1,0 +1,34 @@
+# check-mount.yml
+- name: Set up cron job to check NFS mount availability
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars_files:
+    - ../vars.yml
+
+  tasks:
+    - name: Create check script
+      ansible.builtin.copy:
+        dest: "{{ check_mount_nfs_script_path }}"
+        content: |
+          #!/bin/bash
+          MOUNT_POINT="{{ mount_persistent_storage_mount_point }}"
+          if mountpoint -q "$MOUNT_POINT"; then
+            logger -t check_nfs_mount "NFS mount at $MOUNT_POINT is available"
+          else
+            logger -t check_nfs_mount "ERROR: NFS mount at $MOUNT_POINT is not available"
+            echo "ERROR: NFS mount at $MOUNT_POINT is not available" > /dev/console
+          fi
+        mode: "0755"
+        owner: root
+        group: root
+
+    - name: Set up cron job for mount check (runs at reboot and cyclically)
+      ansible.builtin.cron:
+        name: "Check NFS mount availability"
+        minute: "{{ check_mount_nfs_cron_minute }}"
+        job: "{{ check_mount_nfs_script_path }}"
+        user: root
+        state: present
+        reboot: true

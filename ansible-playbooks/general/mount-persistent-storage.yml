@@ -1,0 +1,41 @@
+# mount-persistent-storage.yml
+- name: Mount OMV NFS share locally on this Proxmox host
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars_files:
+    - ../vars.yml
+
+  tasks:
+    - name: Install required packages (NFS client)
+      ansible.builtin.apt:
+        name:
+          - nfs-common
+        state: present
+        update_cache: true
+
+    - name: Ensure mount directory exists
+      ansible.builtin.file:
+        path: "{{ mount_persistent_storage_mount_point }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Persistently mount NFS share (writes /etc/fstab and mounts)
+      ansible.posix.mount:
+        path: "{{ mount_persistent_storage_mount_point }}"
+        src: "{{ mount_persistent_storage_nas_ip }}:{{ mount_persistent_storage_nas_export }}"
+        fstype: nfs
+        opts: "{{ mount_persistent_storage_nfs_opts }}"
+        state: mounted
+
+    - name: Verify mount is active
+      ansible.builtin.command: "findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS {{ mount_persistent_storage_mount_point }}"
+      register: findmnt_out
+      changed_when: false
+
+    - name: Show mount details
+      ansible.builtin.debug:
+        msg: "{{ findmnt_out.stdout }}"
