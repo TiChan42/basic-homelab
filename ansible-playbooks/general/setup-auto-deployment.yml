@@ -1,8 +1,9 @@
 ---
 - name: Setup Auto-Deployment via Polling for Homelab
-  hosts: localhost
-  connection: local
+  hosts: all
   become: yes
+  vars_files:
+    - vars.yml
 
   tasks:
     - name: Install required packages
