@@ -3,8 +3,6 @@
   hosts: localhost
   connection: local
   become: yes
-  vars_files:
-    - ../ansible-playbooks/vars.yml
 
   tasks:
     - name: Install required packages

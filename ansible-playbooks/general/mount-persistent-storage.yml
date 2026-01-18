@@ -4,9 +4,6 @@
   connection: local
   become: true
 
-  vars_files:
-    - ../ansible-playbooks/vars.yml
-
   tasks:
     - name: Install required packages (NFS client)
       ansible.builtin.apt:

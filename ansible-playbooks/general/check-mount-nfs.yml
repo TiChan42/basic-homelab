@@ -4,9 +4,6 @@
   connection: local
   become: true
 
-  vars_files:
-    - ../ansible-playbooks/vars.yml
-
   tasks:
     - name: Create check script
       ansible.builtin.copy:

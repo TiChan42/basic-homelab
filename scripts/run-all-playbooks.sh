@@ -14,7 +14,7 @@ fi
 for playbook in "$ANSIBLE_DIR/general"/*.yml; do
     if [ -f "$playbook" ]; then
         echo "Running $playbook"
-        ansible-playbook "$playbook"
+        ansible-playbook -e @../ansible-playbooks/vars.yml "$playbook"
     fi
 done
 
@@ -22,7 +22,7 @@ done
 for playbook in "$ANSIBLE_DIR/services"/*.yml; do
     if [ -f "$playbook" ]; then
         echo "Running $playbook"
-        ansible-playbook "$playbook"
+        ansible-playbook -e @../ansible-playbooks/vars.yml "$playbook"
     fi
 done
 
