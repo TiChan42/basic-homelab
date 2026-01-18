@@ -1,6 +1,7 @@
 ---
 - name: Setup Auto-Deployment via Polling for Homelab
-  hosts: all
+  hosts: localhost
+  connection: local
   become: yes
   vars_files:
     - vars.yml
