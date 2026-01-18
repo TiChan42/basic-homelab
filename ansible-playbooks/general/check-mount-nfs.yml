@@ -24,11 +24,18 @@
         owner: root
         group: root
 
-    - name: Set up cron job for mount check (runs at reboot and cyclically)
+    - name: Set up cron job for mount check (runs cyclically)
       ansible.builtin.cron:
-        name: "Check NFS mount availability"
+        name: "Check NFS mount availability cyclic"
         minute: "{{ check_mount_nfs_cron_minute }}"
         job: "{{ check_mount_nfs_script_path }}"
         user: root
         state: present
-        reboot: true
+
+    - name: Set up cron job for mount check (runs at reboot)
+      ansible.builtin.cron:
+        name: "Check NFS mount availability reboot"
+        special_time: reboot
+        job: "{{ check_mount_nfs_script_path }}"
+        user: root
+        state: present
