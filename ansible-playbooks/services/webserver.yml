@@ -102,11 +102,14 @@
     - name: Add Node.js 20 repository
       shell: curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 
+    - name: Update apt cache after adding repo
+      apt:
+        update_cache: yes
+
     - name: Install Node.js 20
       apt:
         name: nodejs
         state: present
-        update_cache: yes
 
     - name: Ensure npm is available
       command: npm --version
