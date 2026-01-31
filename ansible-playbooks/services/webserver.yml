@@ -87,6 +87,14 @@
     - ../vars.yml
 
   tasks:
+    - name: Install required packages
+      apt:
+        name:
+          - git
+          - nodejs
+          - npm
+        state: present
+        update_cache: yes
     - name: Check if git repository exists
       stat:
         path: "/opt/webserver/.git"
