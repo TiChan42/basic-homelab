@@ -70,14 +70,14 @@
       changed_when: install_ssh.rc == 0
 
     - name: Get container IP
-      command: pct exec {{ webserver_container_id }} -- bash -c "ip route get 1 | awk '{print \$7}'"
+      command: pct exec {{ webserver_container_id }} -- hostname -I
       register: container_ip
       changed_when: false
 
     - name: Update /etc/hosts with dynamic container IP
       lineinfile:
         path: /etc/hosts
-        line: "{{ container_ip.stdout }} {{ webserver_container_hostname }}"
+        line: "{{ container_ip.stdout.split()[0] }} {{ webserver_container_hostname }}"
         state: present
 
 - name: Deploy Webserver Service in Proxmox Container
