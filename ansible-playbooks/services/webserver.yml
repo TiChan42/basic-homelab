@@ -97,6 +97,7 @@
           - git
           - nodejs
           - npm
+          - curl
         state: present
         update_cache: yes
     - name: Check if git repository exists
@@ -167,10 +168,29 @@
       failed_when: false
       changed_when: false
 
-    - name: Start webserver (only if not already running)
-      command: "{{ webserver_start_command }}"
-      args:
-        chdir: "/opt/webserver/{{ webserver_start_path }}"
+    - name: Create systemd service for webserver
+      copy:
+        dest: "/etc/systemd/system/{{ webserver_container_hostname }}-demon.service"
+        content: |
+          [Unit]
+          Description=Webserver for {{ webserver_container_hostname }}
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=root
+          WorkingDirectory=/opt/webserver
+          ExecStart=/usr/bin/npm start
+          Environment=PORT=3003
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
       when: process_check.rc != 0
-      async: 60  # Allow up to 60 seconds for the start command
-      poll: 0
+
+    - name: Enable and start webserver service
+      systemd:
+        name: "{{ webserver_container_hostname }}-demon"
+        enabled: yes
+        state: started
+      when: process_check.rc != 0
