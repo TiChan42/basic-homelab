@@ -28,3 +28,10 @@ webserver_build_command: "npm install && npm run build"  # Build command for Nod
 webserver_start_command: "PORT=3003 npm start"  # Start command for Node.js
 webserver_process_name: "node"  # Process name for checking if the server is running
 webserver_container_id: "100"  # Proxmox container ID to start
+webserver_container_template: "/var/lib/vz/template/cache/debian-12-standard_12.0-1_amd64.tar.zst"  # OS template path
+webserver_container_hostname: "webserver"  # Hostname for the container
+webserver_container_memory: "512"  # Memory in MB
+webserver_container_cores: "1"  # Number of CPU cores
+webserver_container_storage: "local-lvm"  # Storage pool
+webserver_container_net0: "name=eth0,bridge=vmbr0,ip=dhcp"  # Network configuration
+webserver_container_rootfs: "local-lvm:4"  # Root filesystem size in GB
