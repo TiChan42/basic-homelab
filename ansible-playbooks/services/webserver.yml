@@ -59,7 +59,7 @@
         seconds: 10
 
 - name: Deploy Webserver Service in Proxmox Container
-  hosts: {{ webserver_container_hostname }}
+  hosts: "{{ webserver_container_hostname }}"
   become: yes
   vars_files:
     - ../vars.yml
