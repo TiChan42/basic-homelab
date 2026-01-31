@@ -33,5 +33,5 @@ webserver_container_hostname: "desktop-background-webserver"  # Hostname for the
 webserver_container_memory: "512"  # Memory in MB
 webserver_container_cores: "1"  # Number of CPU cores
 webserver_container_storage: "local-lvm"  # Storage pool
-webserver_container_net0: "name=eth0,bridge=vmbr0,ip={{ webserver_container_ip }}/24,gw=192.168.1.1"  # Network configuration
+webserver_container_net0: "name=eth0,bridge=vmbr0,ip=dhcp"  # Network configuration
 webserver_container_rootfs: "local-lvm:4"  # Root filesystem size in GB
