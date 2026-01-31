@@ -12,6 +12,17 @@
       changed_when: false
       failed_when: false  # Don't fail if not found
 
+    - name: Check if OS template exists
+      stat:
+        path: "{{ webserver_container_template }}"
+      register: template_stat
+
+    - name: Download OS template if it does not exist
+      command: "pveam download local {{ webserver_container_template | basename }}"
+      when: not template_stat.stat.exists
+      register: download_template
+      changed_when: download_template.rc == 0
+
     - name: Create Proxmox container if it does not exist
       command: >
         pct create {{ webserver_container_id }} {{ webserver_container_template }}
