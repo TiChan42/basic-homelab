@@ -4,8 +4,7 @@
   connection: local
   become: true
 
-  vars_files:
-    - ../vars.yml
+  vars_files: []
 
   tasks:
     - name: Create check script

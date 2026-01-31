@@ -3,8 +3,9 @@
   hosts: localhost
   connection: local
   become: yes
+  # Workaround for implicit localhost not loading group_vars automatically
   vars_files:
-    - vars.yml
+    - "../inventory/group_vars/all.yml"
 
   tasks:
     - name: Install required packages

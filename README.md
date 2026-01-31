@@ -1,6 +1,6 @@
 # Basic Homelab
 
-Dieses Repository enthält Ansible-Playbooks und Scripts zur Einrichtung und Verwaltung eines grundlegenden Homelabs.
+Dieses Repository enthält Ansible-Playbooks und Scripts zur Einrichtung und Verwaltung eines grundlegenden Homelabs auf einem Proxmox Server.
 
 ## Struktur
 
@@ -12,6 +12,23 @@ Dieses Repository enthält Ansible-Playbooks und Scripts zur Einrichtung und Ver
 - `scripts/`: Hilfsscripts
   - `install-necessary-apt-packages.sh`: Script zur Installation notwendiger APT-Pakete
   - `run-all-playbooks.sh`: Script zum Ausführen aller Playbooks
+
+## Proxmox Setup Struktur
+
+Um eine saubere und wartbare Umgebung zu gewährleisten, empfehlen wir folgende Dateisystem-Struktur auf dem Proxmox-Host:
+
+- `/var/lib/vz/`: Standardverzeichnis für VMs und Container
+  - `images/`: VM-Images
+  - `private/`: Private Daten der VMs
+  - `template/`: Templates
+
+- `/mnt/backups/`: Zentrales Backup-Verzeichnis
+  - Mountet auf NAS für einfaches Synchronisieren
+  - Enthält alle Backups von VMs, Containern und Konfigurationen
+
+- `/mnt/nfs/`: NFS-Mounts für persistente Speicherung
+
+Alle Backups sollten in `/mnt/backups/` abgelegt werden, um das Syncen mit dem NAS zu erleichtern. Verwende die Ansible-Playbooks in `general/` zum Mounten des NAS.
 
 ## Installation
 

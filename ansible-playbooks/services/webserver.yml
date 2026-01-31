@@ -1,0 +1,243 @@
+---
+# ==============================================================================
+# Playbook: Services - Webserver
+# Description: Provisions a Proxmox LXC container and deploys a Node.js webserver.
+#
+# Process:
+# 1. Proxmox Container Provisioning (localhost):
+#    - Downloads OS template if missing.
+#    - Creates/Configures the LXC container via Proxmox API.
+#    - Sets up port forwarding on the host.
+#
+# 2. Webserver Deployment (Container):
+#    - Configures internal networking (Netplan) to enforce static IP.
+#    - Installs Node.js & dependencies.
+#    - Deploys application code from Git.
+#    - Configures and starts systemd service.
+# ==============================================================================
+
+- name: Provision Proxmox Container for Webserver
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  tags: [provision]
+  vars_files:
+    - "../inventory/group_vars/all.yml"
+
+  tasks:
+    # --------------------------------------------------------------------------
+    # Prerequisites
+    # --------------------------------------------------------------------------
+    - name: Ensure Proxmox API library is installed
+      apt:
+        name: python3-proxmoxer
+        state: present
+        update_cache: yes
+
+    - name: Get list of available OS templates
+      command: "pveam list local"
+      register: pveam_list
+      changed_when: false
+
+    - name: Download OS template if missing
+      command: "pveam download local {{ webserver_container_template.split('/')[-1] }}"
+      when: webserver_container_template.split('/')[-1] not in pveam_list.stdout
+
+    # --------------------------------------------------------------------------
+    # Container Management
+    # --------------------------------------------------------------------------
+    - name: Create and configure LXC container
+      community.proxmox.proxmox:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_api_token_id }}"
+        api_token_secret: "{{ proxmox_api_token_secret }}"
+        node: "{{ proxmox_node }}"
+        vmid: "{{ webserver_container_id }}"
+        hostname: "{{ webserver_container_hostname }}"
+        ostemplate: "{{ webserver_container_template }}"
+        cores: "{{ webserver_container_cores }}"
+        memory: "{{ webserver_container_memory }}"
+        swap: 1024
+        disk: "{{ webserver_container_rootfs }}"
+        netif:
+          net0: "{{ webserver_container_net0 }}"
+        pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
+        onboot: yes
+        state: present
+      register: container_state
+
+    - name: Ensure container is running
+      community.proxmox.proxmox:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_api_token_id }}"
+        api_token_secret: "{{ proxmox_api_token_secret }}"
+        node: "{{ proxmox_node }}"
+        vmid: "{{ webserver_container_id }}"
+        state: started
+
+    - name: Wait for SSH to become available
+      wait_for:
+        host: "{{ webserver_container_ip }}"
+        port: 22
+        timeout: 60
+        search_regex: OpenSSH
+        delay: 5
+
+    # --------------------------------------------------------------------------
+    # Host Networking
+    # --------------------------------------------------------------------------
+    - name: Add container DNS entry to /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ webserver_container_ip }} {{ webserver_container_hostname }}"
+        state: present
+        mode: '0644'
+
+    - name: Enable port forwarding to container
+      ansible.builtin.iptables:
+        table: nat
+        chain: PREROUTING
+        protocol: tcp
+        destination_port: "{{ webserver_port }}"
+        jump: DNAT
+        to_destination: "{{ webserver_container_ip }}:{{ webserver_port }}"
+        comment: "Forward {{ webserver_port }} -> {{ webserver_container_hostname }}"
+
+
+- name: Deploy Webserver Application
+  hosts: desktop_background_webserver
+  become: yes
+  tags: [deploy]
+  vars_files:
+    - "../inventory/group_vars/all.yml"
+
+  tasks:
+    # --------------------------------------------------------------------------
+    # Guest Networking (Netplan)
+    # --------------------------------------------------------------------------
+    - name: Configure static networking (Netplan)
+      copy:
+        dest: /etc/netplan/99-ansible-static.yaml
+        content: |
+          network:
+            version: 2
+            ethernets:
+              eth0:
+                dhcp4: no
+                addresses:
+                  - {{ webserver_container_ip }}{{ webserver_container_cidr }}
+                nameservers:
+                  addresses: [{{ webserver_container_gateway }}]
+                routes:
+                  - to: default
+                    via: {{ webserver_container_gateway }}
+        mode: '0600'
+      register: netplan_config
+
+    - name: Remove conflicting default Netplan configs
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/netplan/50-cloud-init.yaml
+        - /etc/netplan/00-installer-config.yaml
+      register: netplan_cleanup
+
+    - name: Apply network changes
+      command: netplan apply
+      when: netplan_config.changed or netplan_cleanup.changed
+
+    # --------------------------------------------------------------------------
+    # System Dependencies
+    # --------------------------------------------------------------------------
+    - name: Install system dependencies
+      apt:
+        name: 
+          - git
+          - curl
+          - gnupg
+        state: present
+        update_cache: yes
+
+    - name: Add Node.js repository
+      shell: curl -fsSL https://deb.nodesource.com/setup_current.x | bash -
+      args:
+        creates: /etc/apt/sources.list.d/nodesource.list
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: latest
+        update_cache: yes
+
+    # --------------------------------------------------------------------------
+    # Application Deployment
+    # --------------------------------------------------------------------------
+    - name: Ensure application directory exists
+      file:
+        path: "/opt/webserver"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Clone repository
+      git:
+        repo: "{{ webserver_git_repo }}"
+        dest: "/opt/webserver"
+        version: main
+        force: yes
+      register: git_deployment
+
+    - name: Install dependencies and build application
+      shell: |
+        npm install
+        {{ webserver_build_command }}
+      args:
+        chdir: "/opt/webserver"
+      environment:
+        NODE_OPTIONS: "--max-old-space-size=1024"
+      when: git_deployment.changed or not ansible_check_mode
+      notify: Restart webserver service
+
+    # --------------------------------------------------------------------------
+    # Service Management
+    # --------------------------------------------------------------------------
+    - name: Configure systemd service
+      copy:
+        dest: "/etc/systemd/system/{{ webserver_container_hostname }}.service"
+        content: |
+          [Unit]
+          Description=Webserver {{ webserver_container_hostname }}
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=root
+          WorkingDirectory=/opt/webserver
+          ExecStart=/usr/bin/npm start
+          Environment=PORT={{ webserver_port }}
+          Environment=HOST=0.0.0.0
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+      notify: Restart webserver service
+
+    - name: Start and enable webserver service
+      systemd:
+        name: "{{ webserver_container_hostname }}"
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+  handlers:
+    - name: Restart webserver service
+      systemd:
+        name: "{{ webserver_container_hostname }}"
+        state: restarted
+

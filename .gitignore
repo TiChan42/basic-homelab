@@ -1,1 +1,2 @@
 ansible-playbooks/vars.yml
+ansible-playbooks/inventory/group_vars/all.yml
