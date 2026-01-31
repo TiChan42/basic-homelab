@@ -176,7 +176,7 @@
         state: directory
 
     - name: Run build command (only if git changed or node_modules missing)
-      command: "{{ webserver_build_command }}"
+      shell: "{{ webserver_build_command }}"
       args:
         chdir: "/opt/webserver/{{ webserver_build_path }}"
       when: git_updated or not node_modules_stat.stat.exists
