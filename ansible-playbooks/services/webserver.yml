@@ -211,7 +211,7 @@
           User=root
           WorkingDirectory=/opt/webserver
           ExecStart=/usr/bin/npm start
-          Environment=PORT=3003
+          Environment=PORT=3003,HOST=0.0.0.0
           Restart=always
 
           [Install]
