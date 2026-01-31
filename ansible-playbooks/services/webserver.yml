@@ -49,10 +49,16 @@
         state: present
       when: create_container.changed
 
+    - name: Check container status
+      command: pct status {{ webserver_container_id }}
+      register: container_status
+      changed_when: false
+
     - name: Start the Proxmox container
       command: "pct start {{ webserver_container_id }}"
       register: start_container
       changed_when: start_container.rc == 0
+      when: "'running' not in container_status.stdout"
 
     - name: Wait for container to be ready
       pause:
