@@ -99,6 +99,11 @@
         state: present
         update_cache: yes
 
+    - name: Remove default Node.js if present
+      apt:
+        name: nodejs
+        state: absent
+
     - name: Add Node.js 20 repository
       shell: curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 
