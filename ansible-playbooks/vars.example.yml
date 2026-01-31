@@ -26,6 +26,5 @@ webserver_build_path: "" # Path to build directory relative to repo root
 webserver_start_path: "" # Path to start directory relative to repo root
 webserver_build_command: "npm install && npm run build"  # Build command for Node.js
 webserver_start_command: "PORT=3003 npm start"  # Start command for Node.js
-webserver_health_check_url: "http://localhost:3003/health"  # URL for health check (e.g., with curl)
 webserver_process_name: "node"  # Process name for checking if the server is running
 webserver_container_id: "100"  # Proxmox container ID to start
