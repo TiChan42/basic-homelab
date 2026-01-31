@@ -1,0 +1,98 @@
+---
+- name: Start Proxmox Container
+  hosts: localhost
+  become: yes
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Start the Proxmox container
+      command: "pct start {{ webserver_container_id }}"
+      register: start_container
+      changed_when: start_container.rc == 0
+
+    - name: Wait for container to be ready
+      pause:
+        seconds: 10
+
+- name: Deploy Webserver Service in Proxmox Container
+  hosts: proxmox_container  # Replace with the hostname/IP of the Proxmox container
+  become: yes
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Check if git repository exists
+      stat:
+        path: "/opt/webserver/.git"
+      register: repo_stat
+
+    - name: Clone Git repository if not exists
+      git:
+        repo: "{{ webserver_git_repo }}"
+        dest: "/opt/webserver"
+        version: main
+      when: not repo_stat.stat.exists
+      register: clone_result
+
+    - name: Fetch latest changes if repository exists
+      command: git fetch origin
+      args:
+        chdir: "/opt/webserver"
+      when: repo_stat.stat.exists
+      register: fetch_result
+      changed_when: false
+
+    - name: Check if local is behind remote
+      command: git rev-parse HEAD
+      args:
+        chdir: "/opt/webserver"
+      register: local_head
+      when: repo_stat.stat.exists
+      changed_when: false
+
+    - name: Get remote head
+      command: git rev-parse origin/main
+      args:
+        chdir: "/opt/webserver"
+      register: remote_head
+      when: repo_stat.stat.exists
+      changed_when: false
+
+    - name: Pull if not up-to-date
+      command: git pull origin main
+      args:
+        chdir: "/opt/webserver"
+      when: repo_stat.stat.exists and local_head.stdout != remote_head.stdout
+      register: pull_result
+      changed_when: pull_result.rc == 0
+
+    - name: Set git updated flag
+      set_fact:
+        git_updated: "{{ not repo_stat.stat.exists or pull_result.changed | default(false) }}"
+
+    - name: Run build command (only if build directory does not exist or git changed)
+      command: "{{ webserver_build_command }}"
+      args:
+        chdir: "/opt/webserver/{{ webserver_build_path }}"
+      when: git_updated or not ("/opt/webserver/{{ webserver_build_path }}" | exists)
+      register: build_result
+      changed_when: build_result.rc == 0
+
+    - name: Start webserver (only if not already running)
+      command: "{{ webserver_start_command }}"
+      args:
+        chdir: "/opt/webserver/{{ webserver_start_path }}"
+      when: not (ansible_facts.services | selectattr('name', 'equalto', '{{ webserver_process_name }}') | list | length > 0)
+      register: start_result
+      changed_when: start_result.rc == 0
+      async: 60  # Allow up to 60 seconds for the start command
+      poll: 0
+
+    - name: Health check - Verify webserver is responding
+      uri:
+        url: "{{ webserver_health_check_url }}"
+        method: GET
+      register: health_check
+      failed_when: health_check.status != 200
+      when: start_result.changed or build_result.changed
