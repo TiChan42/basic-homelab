@@ -36,9 +36,9 @@
       register: create_container
       changed_when: create_container.rc == 0
 
-    - name: Copy SSH key to container if created
+    - name: Copy SSH key to container
       command: pct exec {{ webserver_container_id }} -- bash -c "mkdir -p /root/.ssh && echo '{{ lookup('file', '/root/.ssh/id_rsa.pub') }}' >> /root/.ssh/authorized_keys"
-      when: create_container.changed
+      when: "'running' in container_status.stdout"
       register: copy_key
       changed_when: copy_key.rc == 0
 
