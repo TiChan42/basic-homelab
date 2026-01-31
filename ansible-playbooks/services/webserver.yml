@@ -36,6 +36,19 @@
       register: create_container
       changed_when: create_container.rc == 0
 
+    - name: Copy SSH key to container if created
+      command: pct exec {{ webserver_container_id }} -- bash -c "mkdir -p /root/.ssh && echo '{{ lookup('file', '/root/.ssh/id_rsa.pub') }}' >> /root/.ssh/authorized_keys"
+      when: create_container.changed
+      register: copy_key
+      changed_when: copy_key.rc == 0
+
+    - name: Update /etc/hosts with container IP
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ webserver_container_ip }} {{ webserver_container_hostname }}"
+        state: present
+      when: create_container.changed
+
     - name: Start the Proxmox container
       command: "pct start {{ webserver_container_id }}"
       register: start_container
@@ -46,7 +59,7 @@
         seconds: 10
 
 - name: Deploy Webserver Service in Proxmox Container
-  hosts: proxmox_container  # Replace with the hostname/IP of the Proxmox container
+  hosts: {{ webserver_container_hostname }}
   become: yes
   vars_files:
     - ../vars.yml
