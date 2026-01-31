@@ -111,17 +111,6 @@
         name: nodejs
         state: present
 
-    - name: Ensure npm is available
-      command: npm --version
-      register: npm_check
-      failed_when: false
-
-    - name: Install npm if missing
-      apt:
-        name: npm
-        state: present
-      when: npm_check.rc != 0
-
     - name: Ensure /opt/webserver exists
       file:
         path: /opt/webserver
