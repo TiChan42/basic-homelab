@@ -64,6 +64,11 @@
       pause:
         seconds: 10
 
+    - name: Install and start SSH in container
+      command: pct exec {{ webserver_container_id }} -- bash -c "apt update && apt install -y openssh-server && systemctl enable ssh && systemctl start ssh"
+      register: install_ssh
+      changed_when: install_ssh.rc == 0
+
 - name: Deploy Webserver Service in Proxmox Container
   hosts: "{{ webserver_container_hostname }}"
   become: yes
