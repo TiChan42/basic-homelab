@@ -7,7 +7,7 @@
 
   tasks:
     - name: Check if Proxmox container exists
-      command: "pct list | grep -w {{ webserver_container_id }}"
+      command: pct config {{ webserver_container_id }}
       register: pct_list
       changed_when: false
       failed_when: false  # Don't fail if not found
