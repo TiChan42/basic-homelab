@@ -170,7 +170,7 @@
 
     - name: Create systemd service for webserver
       copy:
-        dest: "/etc/systemd/system/{{ webserver_container_hostname }}-demon.service"
+        dest: "/etc/systemd/system/{{ webserver_container_hostname }}.service"
         content: |
           [Unit]
           Description=Webserver for {{ webserver_container_hostname }}
@@ -190,7 +190,7 @@
 
     - name: Enable and start webserver service
       systemd:
-        name: "{{ webserver_container_hostname }}-demon"
+        name: "{{ webserver_container_hostname }}"
         enabled: yes
         state: started
       when: process_check.rc != 0
