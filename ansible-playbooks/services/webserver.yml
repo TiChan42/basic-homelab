@@ -144,11 +144,16 @@
       set_fact:
         git_updated: "{{ not repo_stat.stat.exists or pull_result.changed | default(false) }}"
 
-    - name: Run build command (only if build directory does not exist or git changed)
+    - name: Ensure build directory exists
+      file:
+        path: "/opt/webserver/{{ webserver_build_path }}"
+        state: directory
+
+    - name: Run build command (only if git changed)
       command: "{{ webserver_build_command }}"
       args:
         chdir: "/opt/webserver/{{ webserver_build_path }}"
-      when: git_updated or not ("/opt/webserver/{{ webserver_build_path }}" | exists)
+      when: git_updated
       register: build_result
       changed_when: build_result.rc == 0
 
