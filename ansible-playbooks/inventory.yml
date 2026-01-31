@@ -1,6 +1,6 @@
 all:
   hosts:
-    "{{ webserver_container_hostname }}":
-      ansible_host: "{{ webserver_container_ip }}"
+    desktop-background-webserver:
+      ansible_host: 192.168.1.100
       ansible_user: root
       ansible_ssh_private_key_file: /root/.ssh/id_rsa
