@@ -22,7 +22,11 @@ done
 for playbook in "$ANSIBLE_DIR/services"/*.yml; do
     if [ -f "$playbook" ]; then
         echo "Running $playbook"
-        ansible-playbook -e @${ANSIBLE_DIR}/vars.yml "$playbook"
+        INVENTORY_FLAG=""
+        if [ -f "${ANSIBLE_DIR}/inventory.yml" ]; then
+            INVENTORY_FLAG="-i ${ANSIBLE_DIR}/inventory.yml"
+        fi
+        ansible-playbook $INVENTORY_FLAG -e @${ANSIBLE_DIR}/vars.yml "$playbook"
     fi
 done
 
