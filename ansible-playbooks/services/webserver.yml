@@ -174,16 +174,21 @@
         path: "/opt/webserver/node_modules"
       register: node_modules_stat
 
+    - name: Check if .next exists (Next.js build)
+      stat:
+        path: "/opt/webserver/.next"
+      register: next_stat
+
     - name: Ensure build directory exists
       file:
         path: "/opt/webserver/{{ webserver_build_path }}"
         state: directory
 
-    - name: Run build command (only if git changed or node_modules missing)
+    - name: Run build command (only if git changed or node_modules missing or .next missing)
       shell: "{{ webserver_build_command }}"
       args:
         chdir: "/opt/webserver/{{ webserver_build_path }}"
-      when: git_updated or not node_modules_stat.stat.exists
+      when: git_updated or not node_modules_stat.stat.exists or not next_stat.stat.exists
       register: build_result
       changed_when: build_result.rc == 0
 
