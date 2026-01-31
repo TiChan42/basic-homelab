@@ -80,6 +80,10 @@
         line: "{{ container_ip.stdout.split()[0] }} {{ webserver_container_hostname }}"
         state: present
 
+    - name: Set up port forwarding for webserver
+      command: iptables -t nat -A PREROUTING -p tcp --dport 3003 -j DNAT --to-destination {{ container_ip.stdout.split()[0] }}:3003
+      when: container_ip.stdout is defined
+
 - name: Deploy Webserver Service in Proxmox Container
   hosts: "{{ webserver_container_hostname }}"
   become: yes
