@@ -157,11 +157,17 @@
       register: build_result
       changed_when: build_result.rc == 0
 
+    - name: Check if webserver is running
+      command: pgrep -f "{{ webserver_process_name }}"
+      register: process_check
+      failed_when: false
+      changed_when: false
+
     - name: Start webserver (only if not already running)
       command: "{{ webserver_start_command }}"
       args:
         chdir: "/opt/webserver/{{ webserver_start_path }}"
-      when: not (ansible_facts.services | selectattr('name', 'equalto', '{{ webserver_process_name }}') | list | length > 0)
+      when: process_check.rc != 0
       register: start_result
       changed_when: start_result.rc == 0
       async: 60  # Allow up to 60 seconds for the start command
