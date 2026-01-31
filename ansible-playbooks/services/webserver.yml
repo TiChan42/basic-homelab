@@ -168,7 +168,5 @@
       args:
         chdir: "/opt/webserver/{{ webserver_start_path }}"
       when: process_check.rc != 0
-      register: start_result
-      changed_when: start_result.rc == 0
       async: 60  # Allow up to 60 seconds for the start command
       poll: 0
