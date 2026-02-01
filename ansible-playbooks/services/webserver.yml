@@ -224,3 +224,16 @@
         enabled: yes
         state: started
       when: process_check.rc != 0
+
+- name: Restart Webserver Service
+  hosts: localhost
+  become: yes
+  vars_files:
+    - ../vars.yml
+
+  tasks:
+    - name: wait for 5 seconds before restarting
+      pause:
+        seconds: 5
+    - name: Restart webserver service from host
+      command: pct exec {{ webserver_container_id }} -- systemctl restart {{ webserver_container_hostname }}
