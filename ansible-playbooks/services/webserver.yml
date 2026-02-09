@@ -1,22 +1,31 @@
 ---
 # ==============================================================================
 # Playbook: Services - Webserver
-# Description: Provisions a Proxmox LXC container and deploys a Node.js webserver.
+# Description: Provisions Proxmox LXC containers and deploys Node.js webservers.
+#              Supports multiple webservers via the 'webservers' inventory group.
 #
 # Process:
 # 1. Proxmox Container Provisioning (localhost):
 #    - Downloads OS template if missing.
-#    - Creates/Configures the LXC container via Proxmox API.
+#    - Creates/Configures the LXC container via Proxmox API (per webserver host).
 #    - Sets up port forwarding on the host.
 #
-# 2. Webserver Deployment (Container):
+# 2. Webserver Deployment (Containers):
 #    - Configures internal networking (Netplan) to enforce static IP.
 #    - Installs Node.js & dependencies.
 #    - Deploys application code from Git.
 #    - Configures and starts systemd service.
+#
+# Inventory Requirements (per host in 'webservers' group):
+#   - webserver_container_id       (unique Proxmox VMID)
+#   - webserver_container_ip       (static IP for the container)
+#   - webserver_port               (port the app listens on)
+#   - webserver_git_repo           (Git repository URL)
+#   - webserver_git_branch         (Git branch, default: main)
+#   - webserver_build_command      (build command, default: npm run build)
 # ==============================================================================
 
-- name: Provision Proxmox Container for Webserver
+- name: Provision Proxmox Containers for Webservers
   hosts: localhost
   become: yes
   gather_facts: yes
@@ -34,80 +43,102 @@
         state: present
         update_cache: yes
 
+    - name: Collect unique OS templates needed
+      set_fact:
+        _templates_needed: >-
+          {{ groups['webservers']
+             | map('extract', hostvars, 'webserver_container_template')
+             | unique | list }}
+
     - name: Get list of available OS templates
       command: "pveam list local"
       register: pveam_list
       changed_when: false
 
-    - name: Download OS template if missing
-      command: "pveam download local {{ webserver_container_template.split('/')[-1] }}"
-      when: webserver_container_template.split('/')[-1] not in pveam_list.stdout
+    - name: Download missing OS templates
+      command: "pveam download local {{ item.split('/')[-1] }}"
+      loop: "{{ _templates_needed }}"
+      when: item.split('/')[-1] not in pveam_list.stdout
 
     # --------------------------------------------------------------------------
-    # Container Management
+    # Container Management (per webserver host)
     # --------------------------------------------------------------------------
-    - name: Create and configure LXC container
+    - name: Create and configure LXC containers
       community.proxmox.proxmox:
         api_host: "{{ proxmox_api_host }}"
         api_user: "{{ proxmox_api_user }}"
         api_token_id: "{{ proxmox_api_token_id }}"
         api_token_secret: "{{ proxmox_api_token_secret }}"
         node: "{{ proxmox_node }}"
-        vmid: "{{ webserver_container_id }}"
-        hostname: "{{ webserver_container_hostname }}"
-        ostemplate: "{{ webserver_container_template }}"
-        cores: "{{ webserver_container_cores }}"
-        memory: "{{ webserver_container_memory }}"
+        vmid: "{{ hostvars[item]['webserver_container_id'] }}"
+        hostname: "{{ item }}"
+        ostemplate: "{{ hostvars[item]['webserver_container_template'] }}"
+        cores: "{{ hostvars[item]['webserver_container_cores'] }}"
+        memory: "{{ hostvars[item]['webserver_container_memory'] }}"
         swap: 1024
-        disk: "{{ webserver_container_rootfs }}"
+        disk: "{{ hostvars[item]['webserver_container_rootfs'] }}"
         netif:
-          net0: "{{ webserver_container_net0 }}"
+          net0: "name=eth0,bridge=vmbr0,ip={{ hostvars[item]['webserver_container_ip'] }}{{ hostvars[item]['webserver_container_cidr'] }},gw={{ hostvars[item]['webserver_container_gateway'] }}"
         pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
         onboot: yes
         state: present
-      register: container_state
+      loop: "{{ groups['webservers'] }}"
+      loop_control:
+        label: "{{ item }} (VMID {{ hostvars[item]['webserver_container_id'] }})"
 
-    - name: Ensure container is running
+    - name: Ensure containers are running
       community.proxmox.proxmox:
         api_host: "{{ proxmox_api_host }}"
         api_user: "{{ proxmox_api_user }}"
         api_token_id: "{{ proxmox_api_token_id }}"
         api_token_secret: "{{ proxmox_api_token_secret }}"
         node: "{{ proxmox_node }}"
-        vmid: "{{ webserver_container_id }}"
+        vmid: "{{ hostvars[item]['webserver_container_id'] }}"
         state: started
+      loop: "{{ groups['webservers'] }}"
+      loop_control:
+        label: "{{ item }}"
 
     - name: Wait for SSH to become available
       wait_for:
-        host: "{{ webserver_container_ip }}"
+        host: "{{ hostvars[item]['webserver_container_ip'] }}"
         port: 22
         timeout: 60
         search_regex: OpenSSH
         delay: 5
+      loop: "{{ groups['webservers'] }}"
+      loop_control:
+        label: "{{ item }}"
 
     # --------------------------------------------------------------------------
-    # Host Networking
+    # Host Networking (per webserver host)
     # --------------------------------------------------------------------------
-    - name: Add container DNS entry to /etc/hosts
+    - name: Add container DNS entries to /etc/hosts
       lineinfile:
         path: /etc/hosts
-        line: "{{ webserver_container_ip }} {{ webserver_container_hostname }}"
+        line: "{{ hostvars[item]['webserver_container_ip'] }} {{ item }}"
         state: present
         mode: '0644'
+      loop: "{{ groups['webservers'] }}"
+      loop_control:
+        label: "{{ item }}"
 
-    - name: Enable port forwarding to container
+    - name: Enable port forwarding to containers
       ansible.builtin.iptables:
         table: nat
         chain: PREROUTING
         protocol: tcp
-        destination_port: "{{ webserver_port }}"
+        destination_port: "{{ hostvars[item]['webserver_port'] }}"
         jump: DNAT
-        to_destination: "{{ webserver_container_ip }}:{{ webserver_port }}"
-        comment: "Forward {{ webserver_port }} -> {{ webserver_container_hostname }}"
+        to_destination: "{{ hostvars[item]['webserver_container_ip'] }}:{{ hostvars[item]['webserver_port'] }}"
+        comment: "Forward {{ hostvars[item]['webserver_port'] }} -> {{ item }}"
+      loop: "{{ groups['webservers'] }}"
+      loop_control:
+        label: "{{ item }} (:{{ hostvars[item]['webserver_port'] }})"
 
 
-- name: Deploy Webserver Application
-  hosts: desktop_background_webserver
+- name: Deploy Webserver Applications
+  hosts: webservers
   become: yes
   tags: [deploy]
   vars_files:
@@ -154,17 +185,23 @@
     # --------------------------------------------------------------------------
     - name: Install system dependencies
       apt:
-        name: 
+        name:
           - git
           - curl
           - gnupg
         state: present
         update_cache: yes
 
+    - name: Add NodeSource GPG key
+      apt_key:
+        url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+        state: present
+
     - name: Add Node.js repository
-      shell: curl -fsSL https://deb.nodesource.com/setup_current.x | bash -
-      args:
-        creates: /etc/apt/sources.list.d/nodesource.list
+      apt_repository:
+        repo: "deb https://deb.nodesource.com/node_current.x nodistro main"
+        filename: nodesource
+        state: present
 
     - name: Install Node.js
       apt:
@@ -177,17 +214,17 @@
     # --------------------------------------------------------------------------
     - name: Ensure application directory exists
       file:
-        path: "/opt/webserver"
+        path: "/opt/{{ inventory_hostname }}"
         state: directory
         owner: root
         group: root
         mode: '0755'
 
-    - name: Clone repository
+    - name: Clone/update repository
       git:
         repo: "{{ webserver_git_repo }}"
-        dest: "/opt/webserver"
-        version: main
+        dest: "/opt/{{ inventory_hostname }}"
+        version: "{{ webserver_git_branch | default('main') }}"
         force: yes
       register: git_deployment
 
@@ -196,10 +233,10 @@
         npm install
         {{ webserver_build_command }}
       args:
-        chdir: "/opt/webserver"
+        chdir: "/opt/{{ inventory_hostname }}"
       environment:
         NODE_OPTIONS: "--max-old-space-size=1024"
-      when: git_deployment.changed or not ansible_check_mode
+      when: git_deployment.changed
       notify: Restart webserver service
 
     # --------------------------------------------------------------------------
@@ -207,16 +244,16 @@
     # --------------------------------------------------------------------------
     - name: Configure systemd service
       copy:
-        dest: "/etc/systemd/system/{{ webserver_container_hostname }}.service"
+        dest: "/etc/systemd/system/{{ inventory_hostname }}.service"
         content: |
           [Unit]
-          Description=Webserver {{ webserver_container_hostname }}
+          Description=Webserver {{ inventory_hostname }}
           After=network.target
 
           [Service]
           Type=simple
           User=root
-          WorkingDirectory=/opt/webserver
+          WorkingDirectory=/opt/{{ inventory_hostname }}
           ExecStart=/usr/bin/npm start
           Environment=PORT={{ webserver_port }}
           Environment=HOST=0.0.0.0
@@ -230,7 +267,7 @@
 
     - name: Start and enable webserver service
       systemd:
-        name: "{{ webserver_container_hostname }}"
+        name: "{{ inventory_hostname }}"
         enabled: yes
         state: started
         daemon_reload: yes
@@ -238,6 +275,6 @@
   handlers:
     - name: Restart webserver service
       systemd:
-        name: "{{ webserver_container_hostname }}"
+        name: "{{ inventory_hostname }}"
         state: restarted
 

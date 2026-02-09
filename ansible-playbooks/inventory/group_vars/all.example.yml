@@ -29,22 +29,4 @@ polling_cron_name: "homelab-auto-deployment"
 polling_minute: 0
 polling_hour: 3
 
-# Variables for webserver service (Node.js project)
-webserver_git_repo: "https://github.com/shape-z/windowmesh.git"  # Adjust as needed
-webserver_port: "8080" # Port the webserver listens on
-webserver_build_path: "" 
-webserver_start_path: ""  
-webserver_build_command: "npm install && npm run build"  # Adjust as needed
-webserver_start_command: "PORT={{ webserver_port }} npm start"  # Adjust as needed
-webserver_process_name: "next-server"  # Adjust as needed
-webserver_container_id: "8080"  # Adjust as needed
-webserver_container_template: "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"  # Proxmox VolID format
-webserver_container_hostname: "desktop-background-webserver"  # Hostname for the container
-webserver_container_memory: "512"  # Memory in MB
-webserver_container_cores: "1"  # Number of CPU cores
-webserver_container_storage: "local-lvm"  # Storage pool
-webserver_container_ip: "192.168.1.65" # CHANGE THIS
-webserver_container_cidr: "/24"
-webserver_container_gateway: "192.168.1.1" # CHANGE THIS
-webserver_container_net0: "name=eth0,bridge=vmbr0,ip={{ webserver_container_ip }}{{ webserver_container_cidr }},gw={{ webserver_container_gateway }}"  # Network configuration
-webserver_container_rootfs: "local-lvm:8"  # Root filesystem size in GB
+# Webserver variables are now defined per host in inventory/hosts.yml\n# See the 'webservers' group for configuration.\n# Required per host: webserver_container_id, webserver_container_ip,\n#   webserver_port, webserver_git_repo, webserver_git_branch
