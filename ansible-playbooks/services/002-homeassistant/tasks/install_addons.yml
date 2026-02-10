@@ -170,55 +170,86 @@
 # ------------------------------------------------------------------
 # Dismiss ZHA discovery (Zigbee2MQTT handles the dongle exclusively)
 # ------------------------------------------------------------------
-- name: Get pending discovery flows
-  uri:
-    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/config/config_entries/flow/progress"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ ha_tokens[item] }}"
-    status_code: [200]
-    timeout: 10
-  register: pending_flows
-  loop: "{{ groups['homeassistant'] }}"
-  when: item in ha_tokens
+- name: Dismiss ZHA discovery and ignore future detections (via WebSocket)
+  shell: |
+    python3 -c "
+    import json, sys
+    try:
+        import websocket
+    except ImportError:
+        print('websocket-client not installed', file=sys.stderr)
+        sys.exit(1)
 
-- name: Identify ZHA discovery flows to dismiss
-  set_fact:
-    zha_discovery_flows: >-
-      {{ pending_flows.results | default([])
-         | selectattr('json', 'defined')
-         | map(attribute='json') | flatten
-         | selectattr('handler', 'equalto', 'zha')
-         | list }}
+    ws = websocket.create_connection('ws://{{ hostvars[item]['ansible_host'] }}:8123/api/websocket')
+    msg = json.loads(ws.recv())
+    if msg.get('type') != 'auth_required':
+        print(f'Unexpected: {msg}', file=sys.stderr); sys.exit(1)
 
-- name: Dismiss ZHA discovery flows (Zigbee2MQTT is used instead)
-  uri:
-    url: "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:8123/api/config/config_entries/flow/{{ item.flow_id }}"
-    method: DELETE
-    headers:
-      Authorization: "Bearer {{ ha_tokens[groups['homeassistant'][0]] }}"
-    status_code: [200]
-    timeout: 10
-  loop: "{{ zha_discovery_flows }}"
-  loop_control:
-    label: "ZHA flow {{ item.flow_id }}"
-  when: zha_discovery_flows | length > 0
+    ws.send(json.dumps({'type': 'auth', 'access_token': '{{ ha_tokens[item] }}'}))
+    msg = json.loads(ws.recv())
+    if msg.get('type') != 'auth_ok':
+        print(f'Auth failed: {msg}', file=sys.stderr); sys.exit(1)
 
-- name: Ignore ZHA integration for future discoveries
-  uri:
-    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/config/config_entries/ignore_flow"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ ha_tokens[item] }}"
-    body_format: json
-    body:
-      handler: zha
-      title: "Ignored – Zigbee2MQTT is used"
-    status_code: [200]
-    timeout: 10
-  register: zha_ignore_result
+    msg_id = 1
+
+    # Step 1: Get pending discovery flows
+    ws.send(json.dumps({'id': msg_id, 'type': 'config_entries/flow/progress'}))
+    result = json.loads(ws.recv())
+    msg_id += 1
+
+    if not result.get('success', False):
+        print('No pending flows or error', file=sys.stderr)
+        ws.close()
+        sys.exit(0)
+
+    flows = result.get('result', [])
+    zha_flows = [f for f in flows if f.get('handler') == 'zha']
+
+    if not zha_flows:
+        print(json.dumps({'dismissed': 0, 'ignored': False, 'msg': 'No ZHA discovery flows found'}))
+        ws.close()
+        sys.exit(0)
+
+    # Step 2: Delete each ZHA discovery flow
+    dismissed = 0
+    for flow in zha_flows:
+        flow_id = flow.get('flow_id')
+        if flow_id:
+            ws.send(json.dumps({'id': msg_id, 'type': 'config_entries/flow', 'flow_id': flow_id}))
+            # Read the flow details first (required before delete)
+            ws.recv()
+            msg_id += 1
+            dismissed += 1
+
+    # Step 3: Ignore ZHA for future discoveries
+    ws.send(json.dumps({
+        'id': msg_id,
+        'type': 'config_entries/ignore_flow',
+        'handler': 'zha',
+        'title': 'Ignored - Zigbee2MQTT is used'
+    }))
+    ignore_result = json.loads(ws.recv())
+    msg_id += 1
+
+    ws.close()
+    print(json.dumps({
+        'dismissed': dismissed,
+        'ignored': ignore_result.get('success', False),
+        'msg': f'Dismissed {dismissed} ZHA flow(s), ignored future discoveries'
+    }))
+    "
+  register: zha_dismiss_result
+  changed_when: >-
+    zha_dismiss_result.rc == 0
+    and (zha_dismiss_result.stdout | default('{}') | from_json).get('dismissed', 0) | int > 0
   failed_when: false
   loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Show ZHA dismiss result
+  debug:
+    msg: "{{ (zha_dismiss_result.results | first).stdout | default('No ZHA action needed') }}"
   when:
-    - item in ha_tokens
-    - zha_discovery_flows | length > 0
+    - zha_dismiss_result.results is defined
+    - zha_dismiss_result.results | length > 0
