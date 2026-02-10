@@ -21,27 +21,67 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Configure country, timezone and locale
-  uri:
-    url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/api/config/core/update"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ ha_tokens[item.item] }}"
-    body_format: json
-    body:
-      country: "{{ ha_country }}"
-      currency: "{{ ha_currency }}"
-      time_zone: "{{ ha_timezone }}"
-      unit_system: "{{ ha_unit_system }}"
-      language: "{{ ha_language }}"
-    status_code: [200]
-    timeout: 30
+- name: Determine if core config update is needed
+  set_fact:
+    ha_core_update_needed: >-
+      {{ ha_core_config.results
+         | selectattr('status', 'defined')
+         | selectattr('status', 'equalto', 200)
+         | selectattr('json.country', 'none')
+         | list | length > 0
+         or
+         ha_core_config.results
+         | selectattr('status', 'defined')
+         | selectattr('status', 'equalto', 200)
+         | rejectattr('json.time_zone', 'equalto', ha_timezone)
+         | list | length > 0 }}
+
+- name: Configure country, timezone and locale (via WebSocket API)
+  shell: |
+    python3 -c "
+    import json, sys
+    try:
+        import websocket
+    except ImportError:
+        print('websocket-client not installed', file=sys.stderr)
+        sys.exit(1)
+
+    ws = websocket.create_connection('ws://{{ hostvars[item]['ansible_host'] }}:8123/api/websocket')
+    msg = json.loads(ws.recv())
+    if msg.get('type') != 'auth_required':
+        print(f'Unexpected: {msg}', file=sys.stderr); sys.exit(1)
+
+    ws.send(json.dumps({'type': 'auth', 'access_token': '{{ ha_tokens[item] }}'}))
+    msg = json.loads(ws.recv())
+    if msg.get('type') != 'auth_ok':
+        print(f'Auth failed: {msg}', file=sys.stderr); sys.exit(1)
+
+    ws.send(json.dumps({
+        'id': 1,
+        'type': 'config/core/update',
+        'country': '{{ ha_country }}',
+        'currency': '{{ ha_currency }}',
+        'time_zone': '{{ ha_timezone }}',
+        'unit_system': '{{ ha_unit_system }}',
+        'language': '{{ ha_language }}'
+    }))
+    result = json.loads(ws.recv())
+    ws.close()
+    if not result.get('success', False):
+        print(json.dumps(result), file=sys.stderr); sys.exit(1)
+    print(json.dumps(result))
+    "
+  register: core_config_result
+  loop: "{{ groups['homeassistant'] }}"
   when:
-    - item.status is defined and item.status == 200
-    - item.json.country | default('') != ha_country
-  loop: "{{ ha_core_config.results }}"
-  loop_control:
-    label: "{{ item.item }}"
+    - item in ha_tokens
+    - ha_core_update_needed | bool
+  no_log: true
+
+- name: Show core config result
+  debug:
+    msg: "Core config updated: country={{ ha_country }}, timezone={{ ha_timezone }}, language={{ ha_language }}"
+  when: ha_core_update_needed | bool
 
 # ------------------------------------------------------------------
 # HAOS Update (via Supervisor WebSocket API)
