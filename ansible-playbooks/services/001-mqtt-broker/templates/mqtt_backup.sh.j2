@@ -46,7 +46,7 @@ if [ -f "$PASSWD_FILE" ]; then
   ARCHIVE_CONTENTS+=("$PASSWD_FILE")
 fi
 
-if [ ${#ARCHIVE_CONTENTS[@]} -eq 0 ]; then
+if [ {% raw %}${#ARCHIVE_CONTENTS[@]}{% endraw %} -eq 0 ]; then
   logger -t "$LOG_TAG" "ERROR: No files to backup. Restarting Mosquitto."
   systemctl start mosquitto
   exit 1
