@@ -777,7 +777,28 @@
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
 
-    - name: Submit MQTT configuration
+    - name: Select 'broker' option in MQTT config flow menu
+      uri:
+        url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/api/config/config_entries/flow/{{ item.json.flow_id }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item.item] }}"
+        body_format: json
+        body:
+          next_step_id: broker
+        status_code: [200]
+        timeout: 30
+      register: mqtt_broker_step
+      failed_when: false
+      when:
+        - item.status == 200
+        - item.json.type | default('') == 'menu'
+        - item.item in ha_tokens
+      loop: "{{ mqtt_flow.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Submit MQTT broker configuration
       uri:
         url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/api/config/config_entries/flow/{{ item.json.flow_id }}"
         method: POST
@@ -796,7 +817,7 @@
         - item.status == 200
         - item.item in ha_tokens
       no_log: true
-      loop: "{{ mqtt_flow.results }}"
+      loop: "{{ mqtt_broker_step.results }}"
       loop_control:
         label: "{{ item.item }}"
 
