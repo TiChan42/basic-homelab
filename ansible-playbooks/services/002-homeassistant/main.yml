@@ -626,17 +626,42 @@
     # ------------------------------------------------------------------
 
     # --- Zigbee2MQTT Add-on ---
-    - name: Add Zigbee2MQTT community add-on repository
+    - name: Get current add-on store repositories
       shell: >-
         python3 /usr/local/bin/ha_supervisor_api.py
         "http://{{ hostvars[item]['ansible_host'] }}:8123"
         "{{ ha_tokens[item] }}"
-        POST
-        /store/repositories
-        '{"repository": "https://github.com/zigbee2mqtt/hassio-zigbee2mqtt"}'
+        GET
+        /store
+      register: ha_store_info
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
       no_log: true
+
+    - name: Build repository list with Zigbee2MQTT repo added
+      set_fact:
+        ha_repo_list: >-
+          {{
+            (ha_store_info.results[0].stdout | from_json).repositories
+            | default([])
+            | map(attribute='url')
+            | list
+            | union(['https://github.com/zigbee2mqtt/hassio-zigbee2mqtt'])
+          }}
+      when: ha_store_info.results | length > 0
+
+    - name: Add Zigbee2MQTT community add-on repository
+      shell: >-
+        echo '{{ {"repositories": ha_repo_list} | to_json}}'
+        | python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ hostvars[item]['ansible_host'] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /store/repositories
+        -
+      register: add_repo_result
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
 
     - name: Reload add-on store after adding repository
       shell: >-
