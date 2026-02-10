@@ -303,7 +303,7 @@
 
     - name: Create initial MQTT user
       shell: |
-        mosquitto_passwd -b -c {{ mqtt_password_file }} {{ mqtt_default_user }} {{ mqtt_default_password }}
+        mosquitto_passwd -b -c {{ mqtt_password_file }} {{ mqtt_default_user | quote }} {{ mqtt_default_password | quote }}
       when:
         - mqtt_auth_enabled | default(true) | bool
         - not passwd_file.stat.exists
