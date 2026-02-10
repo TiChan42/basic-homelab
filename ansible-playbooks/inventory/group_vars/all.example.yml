@@ -94,8 +94,9 @@ mqtt_backup_keep_count: 3                         # Number of rotated backups to
 # ==============================================================================
 # Home Assistant – Service-specific settings
 # ==============================================================================
-ha_os_version: "14.1"                            # HAOS version – check releases
-ha_image_url: "https://github.com/home-assistant/operating-system/releases/download/{{ ha_os_version }}/haos_ova-{{ ha_os_version }}.qcow2.xz"
+# ha_os_version is resolved dynamically at runtime (latest stable GitHub release)
+# To pin a specific version, uncomment and set:
+# ha_os_version: "14.2"
 ha_image_download_dir: "/tmp/haos"
 ha_vm_memory: 4096
 ha_vm_cores: 4

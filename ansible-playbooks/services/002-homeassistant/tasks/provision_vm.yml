@@ -7,6 +7,39 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------
+# Resolve latest stable HAOS version from GitHub (unless pinned)
+# ------------------------------------------------------------------
+- name: Resolve latest stable HAOS release from GitHub
+  uri:
+    url: https://api.github.com/repos/home-assistant/operating-system/releases
+    method: GET
+    return_content: yes
+    status_code: [200]
+    timeout: 30
+    headers:
+      Accept: application/vnd.github+json
+  register: haos_releases
+  when: ha_os_version is not defined
+
+- name: Set ha_os_version to latest stable release
+  set_fact:
+    ha_os_version: >-
+      {{ haos_releases.json
+         | rejectattr('prerelease')
+         | rejectattr('draft')
+         | map(attribute='tag_name')
+         | first }}
+  when: ha_os_version is not defined
+
+- name: Set HAOS image download URL
+  set_fact:
+    ha_image_url: "https://github.com/home-assistant/operating-system/releases/download/{{ ha_os_version }}/haos_ova-{{ ha_os_version }}.qcow2.xz"
+
+- name: Show resolved HAOS version
+  debug:
+    msg: "Using HAOS version {{ ha_os_version }} – {{ ha_image_url }}"
+
+# ------------------------------------------------------------------
 # Download HAOS image (only if missing)
 # ------------------------------------------------------------------
 - name: Ensure download directory exists
