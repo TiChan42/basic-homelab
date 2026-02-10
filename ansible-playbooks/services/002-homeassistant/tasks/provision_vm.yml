@@ -96,13 +96,17 @@
     label: "{{ item.item }}"
 
 # ------------------------------------------------------------------
-# Start VM (idempotent – tolerates "already running")
+# Start VM (only if not already running)
 # ------------------------------------------------------------------
-- name: Start Home Assistant VM
-  command: "qm start {{ hostvars[item]['ha_vm_id'] }}"
-  register: vm_start
-  failed_when:
-    - vm_start.rc != 0
-    - "'already running' not in vm_start.stderr"
-  changed_when: vm_start.rc == 0
+- name: Check if Home Assistant VM is already running
+  command: "qm status {{ hostvars[item]['ha_vm_id'] }}"
+  register: vm_status
+  changed_when: false
   loop: "{{ groups['homeassistant'] }}"
+
+- name: Start Home Assistant VM
+  command: "qm start {{ hostvars[item.item]['ha_vm_id'] }}"
+  when: "'running' not in item.stdout"
+  loop: "{{ vm_status.results }}"
+  loop_control:
+    label: "{{ item.item }}"
