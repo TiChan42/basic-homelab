@@ -85,6 +85,7 @@
         api_token_id: "{{ proxmox_api_token_id }}"
         api_token_secret: "{{ proxmox_api_token_secret }}"
         node: "{{ proxmox_node }}"
+        hostname: "{{ item }}"
         vmid: "{{ hostvars[item]['webserver_container_id'] }}"
         state: started
       loop: "{{ groups['webservers'] }}"
