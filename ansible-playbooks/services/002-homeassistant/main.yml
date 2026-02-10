@@ -180,14 +180,12 @@
           {{ (ha_detected_usb_devices + ha_usb_extra_devices) | unique | list }}
 
     - name: Configure USB device passthrough for detected dongles
-      command: "qm set {{ hostvars[item]['ha_vm_id'] }} --usb{{ idx }} host={{ usb_item }},usb3=1"
+      command: "qm set {{ hostvars[usb_passthrough_item.0]['ha_vm_id'] }} --usb{{ ansible_loop.index0 }} host={{ usb_passthrough_item.1 }},usb3=1"
       loop: "{{ groups['homeassistant'] | product(ha_usb_final_devices) | list }}"
-      vars:
-        item: "{{ item.0 }}"
-        usb_item: "{{ item.1 }}"
-        idx: "{{ ansible_loop.index0 }}"
       loop_control:
-        label: "VM {{ hostvars[item.0]['ha_vm_id'] }} <- USB {{ item.1 }}"
+        loop_var: usb_passthrough_item
+        label: "VM {{ hostvars[usb_passthrough_item.0]['ha_vm_id'] }} <- USB {{ usb_passthrough_item.1 }}"
+        extended: true
       when: ha_usb_final_devices | length > 0
 
     - name: Warn if no USB devices found and none manually specified
