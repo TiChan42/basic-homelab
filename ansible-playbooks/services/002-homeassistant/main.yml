@@ -209,9 +209,42 @@
       changed_when: vm_start.rc == 0
       loop: "{{ groups['homeassistant'] }}"
 
+    # ------------------------------------------------------------------
+    # Auto-detect VM IP via QEMU Guest Agent
+    # ------------------------------------------------------------------
+    - name: Wait for QEMU Guest Agent to become ready
+      command: "qm guest cmd {{ hostvars[item]['ha_vm_id'] }} ping"
+      register: agent_ping
+      retries: 30
+      delay: 10
+      until: agent_ping.rc == 0
+      changed_when: false
+      loop: "{{ groups['homeassistant'] }}"
+
+    - name: Detect VM IP address via QEMU Guest Agent
+      shell: >-
+        qm guest cmd {{ hostvars[item]['ha_vm_id'] }} network-get-interfaces
+        | jq -r '[.[] | select(.name != "lo") | ."ip-addresses"[]?
+        | select(."ip-address-type" == "ipv4")] | .[0]."ip-address"'
+      register: detected_ips
+      changed_when: false
+      loop: "{{ groups['homeassistant'] }}"
+
+    - name: Store detected IP addresses for initial API access
+      set_fact:
+        ha_initial_ips: "{{ ha_initial_ips | default({}) | combine({item.item: item.stdout | trim}) }}"
+      loop: "{{ detected_ips.results }}"
+      when: item.stdout | trim | length > 0
+
+    - name: Show detected HA VM IPs
+      debug:
+        msg: "{{ item }} – Current IP: {{ ha_initial_ips[item] }} | Target static IP: {{ hostvars[item]['ansible_host'] }}"
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in (ha_initial_ips | default({}))
+
     - name: Wait for Home Assistant to become available
       uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/"
+        url: "http://{{ ha_initial_ips[item] }}:8123/api/"
         method: GET
         status_code: [200, 401]
         timeout: 10
@@ -227,6 +260,7 @@
     - name: Add HA VM DNS entry to /etc/hosts
       lineinfile:
         path: /etc/hosts
+        regexp: "\\s+{{ hostvars[item]['ha_vm_name'] }}$"
         line: "{{ hostvars[item]['ansible_host'] }} {{ hostvars[item]['ha_vm_name'] }}"
         state: present
         mode: '0644'
@@ -250,7 +284,7 @@
     # ------------------------------------------------------------------
     - name: Check if HA is already onboarded
       uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/onboarding"
+        url: "http://{{ ha_initial_ips[item] }}:8123/api/onboarding"
         method: GET
         status_code: [200]
         timeout: 10
@@ -260,11 +294,11 @@
 
     - name: Complete HA onboarding – create admin user
       uri:
-        url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/api/onboarding/users"
+        url: "http://{{ ha_initial_ips[item.item] }}:8123/api/onboarding/users"
         method: POST
         body_format: json
         body:
-          client_id: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/"
+          client_id: "http://{{ ha_initial_ips[item.item] }}:8123/"
           name: "{{ ha_admin_name }}"
           username: "{{ ha_admin_user }}"
           password: "{{ ha_admin_password }}"
@@ -286,14 +320,14 @@
     # ------------------------------------------------------------------
     - name: Authenticate to get access and refresh token
       uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/auth/token"
+        url: "http://{{ ha_initial_ips[item] }}:8123/auth/token"
         method: POST
         body_format: form-urlencoded
         body:
           grant_type: password
           username: "{{ ha_admin_user }}"
           password: "{{ ha_admin_password }}"
-          client_id: "http://{{ hostvars[item]['ansible_host'] }}:8123/"
+          client_id: "http://{{ ha_initial_ips[item] }}:8123/"
         status_code: [200]
         timeout: 30
       register: auth_response
@@ -330,7 +364,7 @@
     # ------------------------------------------------------------------
     - name: Configure static IP address
       uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/network/interface/default/update"
+        url: "http://{{ ha_initial_ips[item] }}:8123/api/hassio/network/interface/default/update"
         method: POST
         headers:
           Authorization: "Bearer {{ ha_tokens[item] }}"
@@ -348,9 +382,47 @@
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
 
-    - name: Wait for HA to stabilize after network change
-      pause:
-        seconds: 15
+    - name: Wait for HA to become available on static IP
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/"
+        method: GET
+        status_code: [200, 401]
+        timeout: 10
+      register: ha_static_check
+      retries: 30
+      delay: 10
+      until: ha_static_check.status in [200, 401]
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Re-authenticate on static IP
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/auth/token"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          grant_type: password
+          username: "{{ ha_admin_user }}"
+          password: "{{ ha_admin_password }}"
+          client_id: "http://{{ hostvars[item]['ansible_host'] }}:8123/"
+        status_code: [200]
+        timeout: 30
+      register: reauth_response
+      no_log: true
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Update access tokens after IP change
+      set_fact:
+        ha_tokens: "{{ ha_tokens | combine({ item.item: item.json.access_token }) }}"
+      loop: "{{ reauth_response.results }}"
+      no_log: true
+      when: item.status is defined and item.status == 200
+
+    - name: Update initial IPs to static IP (for any remaining references)
+      set_fact:
+        ha_initial_ips: "{{ ha_initial_ips | combine({item: hostvars[item]['ansible_host']}) }}"
+      loop: "{{ groups['homeassistant'] }}"
 
     # ------------------------------------------------------------------
     # Install Add-ons via Supervisor API
