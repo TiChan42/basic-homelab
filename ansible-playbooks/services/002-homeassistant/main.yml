@@ -292,6 +292,7 @@
       failed_when: false
       loop: "{{ groups['homeassistant'] }}"
 
+    # -- Path A: First run – onboarding returns auth_code directly ------
     - name: Complete HA onboarding – create admin user
       uri:
         url: "http://{{ ha_initial_ips[item.item] }}:8123/api/onboarding/users"
@@ -315,24 +316,80 @@
       loop_control:
         label: "{{ item.item }}"
 
+    - name: Store onboarding auth codes
+      set_fact:
+        ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({item.item: item.json.auth_code}) }}"
+      loop: "{{ onboarding_result.results }}"
+      no_log: true
+      when:
+        - item.skipped is not defined or not item.skipped
+        - item.status is defined and item.status == 200
+
+    # -- Path B: Re-run – login flow to obtain auth_code ----------------
+    - name: Initiate login flow (re-run)
+      uri:
+        url: "http://{{ ha_initial_ips[item] }}:8123/auth/login_flow"
+        method: POST
+        body_format: json
+        body:
+          client_id: "http://{{ ha_initial_ips[item] }}:8123/"
+          handler:
+            - "homeassistant"
+            - null
+          redirect_uri: "http://{{ ha_initial_ips[item] }}:8123/"
+        status_code: [200]
+        timeout: 30
+      register: login_flow
+      when: item not in (ha_auth_codes | default({}))
+      loop: "{{ groups['homeassistant'] }}"
+
+    - name: Submit credentials to login flow (re-run)
+      uri:
+        url: "http://{{ ha_initial_ips[item.item] }}:8123/auth/login_flow/{{ item.json.flow_id }}"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ ha_admin_user }}"
+          password: "{{ ha_admin_password }}"
+          client_id: "http://{{ ha_initial_ips[item.item] }}:8123/"
+        status_code: [200]
+        timeout: 30
+      register: login_result
+      no_log: true
+      when:
+        - item.skipped is not defined or not item.skipped
+        - item.status is defined and item.status == 200
+      loop: "{{ login_flow.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Store login flow auth codes (re-run)
+      set_fact:
+        ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({item.item: item.json.result}) }}"
+      loop: "{{ login_result.results }}"
+      no_log: true
+      when:
+        - item.skipped is not defined or not item.skipped
+        - item.status is defined and item.status == 200
+
     # ------------------------------------------------------------------
-    # Obtain access + refresh token
+    # Exchange auth_code for access + refresh token
     # ------------------------------------------------------------------
-    - name: Authenticate to get access and refresh token
+    - name: Exchange auth code for tokens
       uri:
         url: "http://{{ ha_initial_ips[item] }}:8123/auth/token"
         method: POST
         body_format: form-urlencoded
         body:
-          grant_type: password
-          username: "{{ ha_admin_user }}"
-          password: "{{ ha_admin_password }}"
+          grant_type: authorization_code
+          code: "{{ ha_auth_codes[item] }}"
           client_id: "http://{{ ha_initial_ips[item] }}:8123/"
         status_code: [200]
         timeout: 30
       register: auth_response
       no_log: true
       loop: "{{ groups['homeassistant'] }}"
+      when: item in (ha_auth_codes | default({}))
 
     # The access_token is short-lived and used for the rest of THIS playbook run.
     # The refresh_token is persisted to disk so the backup cron can obtain
@@ -343,7 +400,9 @@
         ha_tokens: "{{ ha_tokens | default({}) | combine({ item.item: item.json.access_token }) }}"
       loop: "{{ auth_response.results }}"
       no_log: true
-      when: item.status == 200
+      when:
+        - item.skipped is not defined or not item.skipped
+        - item.status is defined and item.status == 200
 
     # ------------------------------------------------------------------
     # Persist refresh token for backup scripts (cron)
@@ -357,7 +416,9 @@
         group: root
       loop: "{{ auth_response.results }}"
       no_log: true
-      when: item.status == 200
+      when:
+        - item.skipped is not defined or not item.skipped
+        - item.status is defined and item.status == 200
 
     # ------------------------------------------------------------------
     # Configure static IP via Supervisor Network API
@@ -395,29 +456,71 @@
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
 
-    - name: Re-authenticate on static IP
+    - name: Re-authenticate on static IP – initiate login flow
       uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/auth/token"
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/auth/login_flow"
+        method: POST
+        body_format: json
+        body:
+          client_id: "http://{{ hostvars[item]['ansible_host'] }}:8123/"
+          handler:
+            - "homeassistant"
+            - null
+          redirect_uri: "http://{{ hostvars[item]['ansible_host'] }}:8123/"
+        status_code: [200]
+        timeout: 30
+      register: reauth_login_flow
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Re-authenticate on static IP – submit credentials
+      uri:
+        url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/auth/login_flow/{{ item.json.flow_id }}"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ ha_admin_user }}"
+          password: "{{ ha_admin_password }}"
+          client_id: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/"
+        status_code: [200]
+        timeout: 30
+      register: reauth_login_result
+      no_log: true
+      when:
+        - item.skipped is not defined or not item.skipped
+        - item.status is defined and item.status == 200
+      loop: "{{ reauth_login_flow.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Re-authenticate on static IP – exchange auth code for tokens
+      uri:
+        url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/auth/token"
         method: POST
         body_format: form-urlencoded
         body:
-          grant_type: password
-          username: "{{ ha_admin_user }}"
-          password: "{{ ha_admin_password }}"
-          client_id: "http://{{ hostvars[item]['ansible_host'] }}:8123/"
+          grant_type: authorization_code
+          code: "{{ item.json.result }}"
+          client_id: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/"
         status_code: [200]
         timeout: 30
       register: reauth_response
       no_log: true
-      loop: "{{ groups['homeassistant'] }}"
-      when: item in ha_tokens
+      when:
+        - item.skipped is not defined or not item.skipped
+        - item.status is defined and item.status == 200
+      loop: "{{ reauth_login_result.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
     - name: Update access tokens after IP change
       set_fact:
         ha_tokens: "{{ ha_tokens | combine({ item.item: item.json.access_token }) }}"
       loop: "{{ reauth_response.results }}"
       no_log: true
-      when: item.status is defined and item.status == 200
+      when:
+        - item.skipped is not defined or not item.skipped
+        - item.status is defined and item.status == 200
 
     - name: Update initial IPs to static IP (for any remaining references)
       set_fact:
