@@ -94,15 +94,16 @@ Die Playbooks erzeugen folgende Struktur auf dem Proxmox-Host:
 /mnt/nas/                              # NFS-Mount (NAS)
 ├── services/                          # Persistente Service-Daten
 └── backups/                           # Alle Backups
-    ├── mqtt-broker/                   # Mosquitto Config + Persistence
-    │   ├── mosquitto.conf
-    │   ├── passwd
-    │   ├── data/
+    ├── mqtt-broker/                   # Mosquitto Backup-Archive
+    │   ├── mqtt_backup.0.tar.gz       # Neuestes
+    │   ├── mqtt_backup.1.tar.gz
+    │   ├── mqtt_backup.N.tar.gz       # Ältestes (N = keep_count - 1)
     │   └── backup_meta.txt
     ├── homeassistant/                 # HA Backup-Archive
     │   └── <instance>/
-    │       ├── ha_backup_latest.tar
-    │       └── ha_backup_previous.tar
+    │       ├── ha_backup.0.tar         # Neuestes
+    │       ├── ha_backup.1.tar
+    │       └── ha_backup.N.tar         # Ältestes
     └── ansible-config/                # Ansible all.yml Backup
         └── all.yml
 
@@ -204,25 +205,35 @@ ansible-playbook ... mqtt-broker/main.yml --tags deploy
 
 | Service | Methode | Intervall | Ziel |
 |---|---|---|---|
-| **MQTT Broker** | Stop → rsync → Start (Cron) | Alle 4 Stunden | `/mnt/nas/backups/mqtt-broker/` |
+| **MQTT Broker** | Stop → tar.gz → Start (Cron) | Alle 4 Stunden | `/mnt/nas/backups/mqtt-broker/` |
 | **Home Assistant** | HA API Full Backup (Cron) | Täglich 02:30 | `/mnt/nas/backups/homeassistant/` |
 | **Ansible Config** | Kopie nach Playbook-Run | Bei jedem Run | `/mnt/nas/backups/ansible-config/` |
 
-### MQTT Backup-Validierung
+### Einheitliches Backup-Konzept (MQTT & HA)
 
-- Automatischer Restore-on-Boot via systemd wenn lokale Daten fehlen
-- Backup umfasst: Config, Persistence-Daten, Passwort-Datei
+Beide Services verwenden dasselbe Validierungs- und Rotationskonzept:
 
-### HA Backup-Validierung
+1. ✅ Backup wird zuerst in eine **temporäre Datei** geschrieben
+2. ✅ Validierung: Datei ist **nicht leer**
+3. ✅ Validierung: Datei hat **Mindestgröße** (`mqtt_backup_min_size` / `ha_backup_min_size`)
+4. ✅ Validierung: Datei ist ein **gültiges tar-Archiv** (`tar -tzf` / `tar -tf`)
+5. ✅ Erst dann: **Nummerierte Rotation** – alle vorhandenen Backups rücken eins nach hinten
 
-Jedes HA-Backup wird vor dem Übernehmen validiert:
+Die Anzahl der aufbewahrten Generationen wird per Variable gesteuert:
 
-1. ✅ HTTP-Statuscode = 200
-2. ✅ Dateigröße > 10 KB
-3. ✅ Gültiges tar-Archiv (`tar -tf`)
-4. ✅ Erst dann: altes Backup rotieren → neues übernehmen
+| Variable | Default | Beschreibung |
+|---|---|---|
+| `mqtt_backup_keep_count` | 3 | Rotierte MQTT-Backups auf NAS |
+| `ha_backup_keep_count` | 3 | Rotierte HA-Backups auf NAS + Cleanup in HA |
 
-Es gibt immer zwei Backups: `ha_backup_latest.tar` + `ha_backup_previous.tar`.
+Benennungsschema: `*.0.tar(.gz)` = neuestes, `*.1.tar(.gz)` = vorheriges, usw.
+Das älteste Backup (`*.{keep_count-1}`) wird automatisch gelöscht.
+
+### Restore-on-Boot (MQTT)
+
+- Systemd-Oneshot-Service prüft beim Container-Start, ob lokale Daten fehlen
+- Iteriert durch alle verfügbaren Backups (0 → 1 → 2 → ...) bis ein valides gefunden wird
+- Gleiche Validierungslogik wie beim Backup (Größe, tar-Integrität)
 
 ### Disaster Recovery (Neuinstallation)
 

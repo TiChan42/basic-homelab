@@ -88,6 +88,8 @@ mqtt_backup_script_path: "/usr/local/bin/mqtt_backup.sh"
 mqtt_restore_script_path: "/usr/local/bin/mqtt_restore.sh"
 mqtt_backup_cron_minute: "0"
 mqtt_backup_cron_hour: "*/4"                     # Every 4 hours
+mqtt_backup_min_size: 1024                        # Minimum backup size in bytes (1 KB)
+mqtt_backup_keep_count: 3                         # Number of rotated backups to keep
 
 # ==============================================================================
 # Home Assistant – Service-specific settings
@@ -133,5 +135,6 @@ ha_restore_script_path: "/usr/local/bin/ha_restore.sh"
 ha_healthcheck_script_path: "/usr/local/bin/ha_healthcheck.sh"
 ha_backup_cron_minute: "30"
 ha_backup_cron_hour: "2"                         # Daily at 02:30
-ha_backup_keep_count: 3
+ha_backup_keep_count: 3                           # Number of rotated backups to keep (NAS + HA internal)
+ha_backup_min_size: 10240                         # Minimum backup size in bytes (10 KB)
 ha_healthcheck_cron_minute: "*/10"               # Every 10 minutes

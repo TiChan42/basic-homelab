@@ -1,14 +1,16 @@
 #!/bin/bash
 # ============================================
 # Home Assistant Backup Script
-# Auto-generated loop for all HA instances
+# Auto-generated loop for all HA instances.
 # Uses refresh token to obtain fresh access tokens.
+# Numbered rotation (0 = newest) with validation.
 # ============================================
 set -euo pipefail
 
 REFRESH_TOKEN_FILE="{{ ha_refresh_token_file }}"
 BACKUP_DIR_ROOT="{{ nas_backup_mount }}/homeassistant"
-MAX_BACKUPS={{ ha_backup_keep_count }}
+KEEP_COUNT={{ ha_backup_keep_count }}
+MIN_BACKUP_SIZE={{ ha_backup_min_size }}
 
 # Verify refresh token file exists
 if [ ! -f "$REFRESH_TOKEN_FILE" ]; then
@@ -45,6 +47,7 @@ for instance in "${HA_INSTANCES[@]}"; do
   HA_URL="http://$IP:8123"
   LOG_TAG="ha-backup-$NAME"
   BACKUP_DIR="$BACKUP_DIR_ROOT/$NAME"
+  BACKUP_PREFIX="$BACKUP_DIR/ha_backup"
 
   mkdir -p "$BACKUP_DIR"
   logger -t "$LOG_TAG" "Starting backup for $NAME ($IP)..."
@@ -92,9 +95,6 @@ for instance in "${HA_INSTANCES[@]}"; do
 
   # Download to temporary file first
   TMP_FILE="$BACKUP_DIR/.ha_backup_downloading.tar"
-  FINAL_FILE="$BACKUP_DIR/ha_backup_latest.tar"
-  PREVIOUS_FILE="$BACKUP_DIR/ha_backup_previous.tar"
-  MIN_BACKUP_SIZE=10240  # 10 KB – a valid HA backup is always larger
 
   DOWNLOAD_HTTP=$(curl -s -o "$TMP_FILE" -w "%{http_code}" \
     -H "Authorization: Bearer $HA_TOKEN" \
@@ -102,14 +102,14 @@ for instance in "${HA_INSTANCES[@]}"; do
 
   # Validate: HTTP status
   if [ "$DOWNLOAD_HTTP" != "200" ]; then
-    logger -t "$LOG_TAG" "ERROR: Download failed (HTTP $DOWNLOAD_HTTP). Keeping previous backup."
+    logger -t "$LOG_TAG" "ERROR: Download failed (HTTP $DOWNLOAD_HTTP). Keeping previous backups."
     rm -f "$TMP_FILE"
     continue
   fi
 
   # Validate: file exists and has content
   if [ ! -s "$TMP_FILE" ]; then
-    logger -t "$LOG_TAG" "ERROR: Downloaded file is empty. Keeping previous backup."
+    logger -t "$LOG_TAG" "ERROR: Downloaded file is empty. Keeping previous backups."
     rm -f "$TMP_FILE"
     continue
   fi
@@ -117,32 +117,37 @@ for instance in "${HA_INSTANCES[@]}"; do
   # Validate: minimum size
   FILE_SIZE=$(stat -c%s "$TMP_FILE" 2>/dev/null || stat -f%z "$TMP_FILE" 2>/dev/null || echo "0")
   if [ "$FILE_SIZE" -lt "$MIN_BACKUP_SIZE" ]; then
-    logger -t "$LOG_TAG" "ERROR: Backup too small (${FILE_SIZE} bytes). Keeping previous backup."
+    logger -t "$LOG_TAG" "ERROR: Backup too small (${FILE_SIZE} bytes, min ${MIN_BACKUP_SIZE}). Keeping previous backups."
     rm -f "$TMP_FILE"
     continue
   fi
 
   # Validate: valid tar archive
   if ! tar -tf "$TMP_FILE" > /dev/null 2>&1; then
-    logger -t "$LOG_TAG" "ERROR: Downloaded file is not a valid tar archive. Keeping previous backup."
+    logger -t "$LOG_TAG" "ERROR: Downloaded file is not a valid tar archive. Keeping previous backups."
     rm -f "$TMP_FILE"
     continue
   fi
 
-  # All checks passed – rotate and promote
-  if [ -f "$FINAL_FILE" ]; then
-    mv -f "$FINAL_FILE" "$PREVIOUS_FILE"
-    logger -t "$LOG_TAG" "Previous backup rotated to $(basename "$PREVIOUS_FILE")."
-  fi
-  mv -f "$TMP_FILE" "$FINAL_FILE"
+  # All checks passed – rotate numbered backups
+  #    Delete oldest, shift N-1 → N, ..., 1 → 2, 0 → 1, new → 0
+  rm -f "${BACKUP_PREFIX}.$((KEEP_COUNT - 1)).tar"
 
-  # Cleanup old backups in HA
+  for (( i = KEEP_COUNT - 2; i >= 0; i-- )); do
+    if [ -f "${BACKUP_PREFIX}.${i}.tar" ]; then
+      mv -f "${BACKUP_PREFIX}.${i}.tar" "${BACKUP_PREFIX}.$((i + 1)).tar"
+    fi
+  done
+
+  mv -f "$TMP_FILE" "${BACKUP_PREFIX}.0.tar"
+
+  # Cleanup old backups inside HA
   ALL_SLUGS=$(curl -s -H "Authorization: Bearer $HA_TOKEN" \
-    "$HA_URL/api/hassio/backups" | jq -r '.data.backups | sort_by(.date) | reverse | .['"$MAX_BACKUPS"':] | .[].slug')
+    "$HA_URL/api/hassio/backups" | jq -r '.data.backups | sort_by(.date) | reverse | .['"$KEEP_COUNT"':] | .[].slug')
 
   for OLD_SLUG in $ALL_SLUGS; do
      curl -s -X DELETE -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/hassio/backups/$OLD_SLUG"
   done
 
-  logger -t "$LOG_TAG" "Backup completed (${FILE_SIZE} bytes) -> $FINAL_FILE"
+  logger -t "$LOG_TAG" "Backup completed (${FILE_SIZE} bytes) -> ${BACKUP_PREFIX}.0.tar"
 done

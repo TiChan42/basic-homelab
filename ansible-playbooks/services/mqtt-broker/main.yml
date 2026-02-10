@@ -19,11 +19,16 @@
 #    - Sets up restore-on-boot via systemd.
 #
 # Backup Concept:
-#   - A cron job runs every N minutes (configurable).
-#   - It stops Mosquitto briefly to ensure data consistency,
-#     copies config + persistence data to the NAS mount, then restarts.
+#   - A cron job runs every N hours (configurable).
+#   - It stops Mosquitto briefly, creates a validated tar.gz archive
+#     (config + persistence data + passwd) to a temp file, then restarts.
+#   - Validation: non-empty, minimum size, valid tar.gz – only then
+#     the previous backup is rotated and the new one promoted:
+#       mqtt_backup_latest.tar.gz  →  mqtt_backup_previous.tar.gz
+#       (new archive)              →  mqtt_backup_latest.tar.gz
 #   - On container boot a systemd oneshot service checks if local data
-#     is missing or empty and restores from the NAS backup automatically.
+#     is missing or empty and restores from the NAS backup automatically
+#     (falls back to previous if latest is invalid).
 #
 # Inventory Requirements (per host in 'mqtt_brokers' group):
 #   - mqtt_container_id            (unique Proxmox VMID)
@@ -224,44 +229,39 @@
       register: local_data_check
       ignore_errors: yes
 
-    - name: Check if NAS backup exists
+    - name: Find available NAS backup archives (numbered, 0 = newest)
       stat:
-        path: "{{ nas_backup_mount }}/mqtt-broker/mosquitto.conf"
-      register: nas_backup_check
+        path: "{{ nas_backup_mount }}/mqtt-broker/mqtt_backup.{{ item }}.tar.gz"
+      register: nas_backup_candidates
+      loop: "{{ range(0, mqtt_backup_keep_count) | list }}"
+      when: (local_data_check.matched | default(0)) == 0
 
-    - name: Restore configuration from NAS backup
-      copy:
-        src: "{{ nas_backup_mount }}/mqtt-broker/mosquitto.conf"
-        dest: /etc/mosquitto/mosquitto.conf
+    - name: Set best available backup to restore from
+      set_fact:
+        mqtt_restore_archive: "{{ (nas_backup_candidates.results | default([]) | selectattr('stat.exists', 'defined') | selectattr('stat.exists') | first).stat.path | default('') }}"
+      when: (local_data_check.matched | default(0)) == 0
+
+    - name: Restore Mosquitto data from NAS backup archive
+      unarchive:
+        src: "{{ mqtt_restore_archive }}"
+        dest: /
         remote_src: yes
+      when:
+        - (local_data_check.matched | default(0)) == 0
+        - mqtt_restore_archive | default('') | length > 0
+
+    - name: Fix ownership after restore
+      file:
+        path: "{{ item }}"
         owner: mosquitto
         group: mosquitto
-        mode: '0640'
+        recurse: "{{ item == mqtt_data_dir }}"
+      loop:
+        - "{{ mqtt_data_dir }}"
+        - "/etc/mosquitto/mosquitto.conf"
       when:
-        - nas_backup_check.stat.exists
         - (local_data_check.matched | default(0)) == 0
-
-    - name: Restore persistence data from NAS backup
-      synchronize:
-        src: "{{ nas_backup_mount }}/mqtt-broker/data/"
-        dest: "{{ mqtt_data_dir }}/"
-        delete: no
-      delegate_to: "{{ inventory_hostname }}"
-      when:
-        - nas_backup_check.stat.exists
-        - (local_data_check.matched | default(0)) == 0
-
-    - name: Restore password file from NAS backup
-      copy:
-        src: "{{ nas_backup_mount }}/mqtt-broker/passwd"
-        dest: "{{ mqtt_password_file }}"
-        remote_src: yes
-        owner: mosquitto
-        group: mosquitto
-        mode: '0600'
-      when:
-        - nas_backup_check.stat.exists
-        - (local_data_check.matched | default(0)) == 0
+        - mqtt_restore_archive | default('') | length > 0
       ignore_errors: yes
 
     # ------------------------------------------------------------------

@@ -1,7 +1,10 @@
 #!/bin/bash
 # ============================================
 # MQTT Broker Restore Script – managed by Ansible
-# Restores data from NAS if local data is missing
+# Restores Mosquitto data from a validated tar.gz
+# archive on NAS if local data is missing.
+# Iterates through numbered backups (0 = newest)
+# until a valid one is found.
 # ============================================
 set -euo pipefail
 
@@ -10,20 +13,24 @@ DATA_DIR="{{ mqtt_data_dir }}"
 CONF_FILE="/etc/mosquitto/mosquitto.conf"
 PASSWD_FILE="{{ mqtt_password_file }}"
 LOG_TAG="mqtt-restore"
+MIN_BACKUP_SIZE={{ mqtt_backup_min_size }}
+KEEP_COUNT={{ mqtt_backup_keep_count }}
+
+BACKUP_PREFIX="$BACKUP_DIR/mqtt_backup"
 
 # Wait for NFS mount (max 60 seconds)
 for i in $(seq 1 12); do
-  mountpoint -q "{{ nas_backup_mount }}" && break
+  mountpoint -q "{{ nas_mount }}" && break
   logger -t "$LOG_TAG" "Waiting for NFS mount... ($i/12)"
   sleep 5
 done
 
-if ! mountpoint -q "{{ nas_backup_mount }}"; then
+if ! mountpoint -q "{{ nas_mount }}"; then
   logger -t "$LOG_TAG" "ERROR: NFS mount not available. Skipping restore."
   exit 1
 fi
 
-# Check if local data is missing or empty
+# Check if local data is present
 DATA_COUNT=$(find "$DATA_DIR" -type f 2>/dev/null | wc -l)
 
 if [ "$DATA_COUNT" -gt 0 ]; then
@@ -31,32 +38,78 @@ if [ "$DATA_COUNT" -gt 0 ]; then
   exit 0
 fi
 
-# Check if NAS backup exists
-if [ ! -f "$BACKUP_DIR/mosquitto.conf" ]; then
-  logger -t "$LOG_TAG" "No NAS backup found. Starting fresh."
+# -----------------------------------------------
+# Helper: validate a backup archive
+# -----------------------------------------------
+validate_backup() {
+  local ARCHIVE="$1"
+
+  if [ ! -f "$ARCHIVE" ]; then
+    return 1
+  fi
+
+  if [ ! -s "$ARCHIVE" ]; then
+    logger -t "$LOG_TAG" "Validation failed: $(basename "$ARCHIVE") is empty."
+    return 1
+  fi
+
+  local FILE_SIZE
+  FILE_SIZE=$(stat -c%s "$ARCHIVE" 2>/dev/null || stat -f%z "$ARCHIVE" 2>/dev/null || echo "0")
+  if [ "$FILE_SIZE" -lt "$MIN_BACKUP_SIZE" ]; then
+    logger -t "$LOG_TAG" "Validation failed: $(basename "$ARCHIVE") too small (${FILE_SIZE} bytes)."
+    return 1
+  fi
+
+  if ! tar -tzf "$ARCHIVE" > /dev/null 2>&1; then
+    logger -t "$LOG_TAG" "Validation failed: $(basename "$ARCHIVE") is not a valid tar.gz."
+    return 1
+  fi
+
+  return 0
+}
+
+# -----------------------------------------------
+# Find best available backup (0 → 1 → 2 → ...)
+# -----------------------------------------------
+RESTORE_FILE=""
+
+for (( i = 0; i < KEEP_COUNT; i++ )); do
+  CANDIDATE="${BACKUP_PREFIX}.${i}.tar.gz"
+  if validate_backup "$CANDIDATE"; then
+    RESTORE_FILE="$CANDIDATE"
+    if [ "$i" -gt 0 ]; then
+      logger -t "$LOG_TAG" "WARNING: Backups 0-$((i-1)) invalid, falling back to backup ${i}."
+    else
+      logger -t "$LOG_TAG" "Using newest backup (0)."
+    fi
+    break
+  fi
+done
+
+if [ -z "$RESTORE_FILE" ]; then
+  logger -t "$LOG_TAG" "No valid NAS backup found (checked 0-$((KEEP_COUNT-1))). Starting fresh."
   exit 0
 fi
 
-logger -t "$LOG_TAG" "Local data missing – restoring from NAS backup..."
+logger -t "$LOG_TAG" "Local data missing – restoring from $(basename "$RESTORE_FILE")..."
 
 # Stop Mosquitto if running
 systemctl stop mosquitto 2>/dev/null || true
 
-# Restore config
-cp -f "$BACKUP_DIR/mosquitto.conf" "$CONF_FILE"
+# Extract archive (absolute paths are stored in the tar)
+tar -xzf "$RESTORE_FILE" -C /
+
+# Fix ownership
 chown mosquitto:mosquitto "$CONF_FILE"
 chmod 640 "$CONF_FILE"
 
-# Restore persistence data
-mkdir -p "$DATA_DIR"
-rsync -a "$BACKUP_DIR/data/" "$DATA_DIR/"
-chown -R mosquitto:mosquitto "$DATA_DIR"
+if [ -d "$DATA_DIR" ]; then
+  chown -R mosquitto:mosquitto "$DATA_DIR"
+fi
 
-# Restore password file
-if [ -f "$BACKUP_DIR/passwd" ]; then
-  cp -f "$BACKUP_DIR/passwd" "$PASSWD_FILE"
+if [ -f "$PASSWD_FILE" ]; then
   chown mosquitto:mosquitto "$PASSWD_FILE"
   chmod 600 "$PASSWD_FILE"
 fi
 
-logger -t "$LOG_TAG" "Restore completed. Mosquitto will be started by systemd."
+logger -t "$LOG_TAG" "Restore completed from $(basename "$RESTORE_FILE"). Mosquitto will be started by systemd."
