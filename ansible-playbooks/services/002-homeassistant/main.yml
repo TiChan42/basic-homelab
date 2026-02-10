@@ -111,7 +111,7 @@
         --machine q35
         --ostype l26
         --agent 1
-        --net0 virtio,bridge={{ ha_vm_bridge }},macaddr={{ ha_vm_mac | default('') }}
+        --net0 virtio,bridge={{ ha_vm_bridge }}{{ ',macaddr=' + ha_vm_mac if ha_vm_mac | default('') | length > 0 else '' }}
         --scsihw virtio-scsi-pci
         --onboot 1
         --efidisk0 {{ default_storage }}:1
