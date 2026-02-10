@@ -365,7 +365,9 @@
 
     - name: Store login flow auth codes (re-run)
       set_fact:
-        ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({item.item: item.json.result}) }}"
+        ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({_host: item.json.result}) }}"
+      vars:
+        _host: "{{ item.item.item }}"
       loop: "{{ login_result.results }}"
       no_log: true
       when:
@@ -495,15 +497,17 @@
 
     - name: Re-authenticate on static IP – exchange auth code for tokens
       uri:
-        url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/auth/token"
+        url: "http://{{ hostvars[_host]['ansible_host'] }}:8123/auth/token"
         method: POST
         body_format: form-urlencoded
         body:
           grant_type: authorization_code
           code: "{{ item.json.result }}"
-          client_id: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/"
+          client_id: "http://{{ hostvars[_host]['ansible_host'] }}:8123/"
         status_code: [200]
         timeout: 30
+      vars:
+        _host: "{{ item.item.item }}"
       register: reauth_response
       no_log: true
       when:
@@ -511,11 +515,13 @@
         - item.status is defined and item.status == 200
       loop: "{{ reauth_login_result.results }}"
       loop_control:
-        label: "{{ item.item }}"
+        label: "{{ item.item.item }}"
 
     - name: Update access tokens after IP change
       set_fact:
-        ha_tokens: "{{ ha_tokens | combine({ item.item: item.json.access_token }) }}"
+        ha_tokens: "{{ ha_tokens | combine({ _host: item.json.access_token }) }}"
+      vars:
+        _host: "{{ item.item.item.item }}"
       loop: "{{ reauth_response.results }}"
       no_log: true
       when:
