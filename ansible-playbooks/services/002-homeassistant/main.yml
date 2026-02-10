@@ -806,10 +806,10 @@
 
     - name: Submit MQTT broker configuration
       uri:
-        url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/api/config/config_entries/flow/{{ item.json.flow_id }}"
+        url: "http://{{ hostvars[item.item.item]['ansible_host'] }}:8123/api/config/config_entries/flow/{{ item.json.flow_id }}"
         method: POST
         headers:
-          Authorization: "Bearer {{ ha_tokens[item.item] }}"
+          Authorization: "Bearer {{ ha_tokens[item.item.item] }}"
         body_format: json
         body:
           broker: "{{ ha_z2m_mqtt_broker_ip }}"
@@ -821,11 +821,11 @@
         timeout: 30
       when:
         - item.status == 200
-        - item.item in ha_tokens
+        - item.item.item in ha_tokens
       no_log: true
       loop: "{{ mqtt_broker_step.results }}"
       loop_control:
-        label: "{{ item.item }}"
+        label: "{{ item.item.item | default('unknown') }}"
 
     # ------------------------------------------------------------------
     # Verification
