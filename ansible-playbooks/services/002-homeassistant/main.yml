@@ -816,7 +816,6 @@
           port: "{{ mqtt_port | int }}"
           username: "{{ mqtt_default_user }}"
           password: "{{ mqtt_default_password }}"
-          discovery: true
         status_code: [200]
         timeout: 30
       when:
