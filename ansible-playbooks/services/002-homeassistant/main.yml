@@ -531,7 +531,7 @@
               "nameservers": [network_dns | default(network_gateway)]}} | to_json }}
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
-      no_log: true
+      # no_log: true  # temporarily disabled for debugging
 
     - name: Wait for HA to become available on static IP
       uri:
