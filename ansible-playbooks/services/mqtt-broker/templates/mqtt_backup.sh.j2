@@ -1,0 +1,47 @@
+#!/bin/bash
+# ============================================
+# MQTT Broker Backup Script – managed by Ansible
+# Saves consistent Mosquitto data to NAS
+# ============================================
+set -euo pipefail
+
+BACKUP_DIR="{{ nas_backup_mount }}/mqtt-broker"
+DATA_DIR="{{ mqtt_data_dir }}"
+CONF_FILE="/etc/mosquitto/mosquitto.conf"
+PASSWD_FILE="{{ mqtt_password_file }}"
+LOG_TAG="mqtt-backup"
+
+logger -t "$LOG_TAG" "Starting MQTT backup..."
+
+# 1. Check NFS mount is available
+if ! mountpoint -q "{{ nas_backup_mount }}"; then
+  logger -t "$LOG_TAG" "ERROR: NAS mount not available at {{ nas_backup_mount }}"
+  exit 1
+fi
+
+# 2. Stop Mosquitto to ensure data consistency
+systemctl stop mosquitto
+sleep 2
+
+# 3. Copy data (overwriting previous backup)
+mkdir -p "$BACKUP_DIR/data"
+
+# Configuration
+cp -f "$CONF_FILE" "$BACKUP_DIR/mosquitto.conf"
+
+# Persistence data (retained messages, subscriptions)
+rsync -a --delete "$DATA_DIR/" "$BACKUP_DIR/data/"
+
+# Password file
+if [ -f "$PASSWD_FILE" ]; then
+  cp -f "$PASSWD_FILE" "$BACKUP_DIR/passwd"
+fi
+
+# 4. Metadata
+echo "backup_date=$(date -Iseconds)" > "$BACKUP_DIR/backup_meta.txt"
+echo "hostname=$(hostname)" >> "$BACKUP_DIR/backup_meta.txt"
+
+# 5. Restart Mosquitto
+systemctl start mosquitto
+
+logger -t "$LOG_TAG" "MQTT backup completed successfully."

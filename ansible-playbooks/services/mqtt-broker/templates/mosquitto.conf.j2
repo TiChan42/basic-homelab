@@ -1,0 +1,37 @@
+# ============================================
+# Mosquitto MQTT Broker – managed by Ansible
+# ============================================
+
+# Persistence – retain messages across restarts
+persistence true
+persistence_location {{ mqtt_data_dir }}/
+autosave_interval {{ mqtt_autosave_interval }}
+
+# Logging
+log_dest file {{ mqtt_log_dir }}/mosquitto.log
+log_type all
+connection_messages true
+log_timestamp true
+log_timestamp_format %Y-%m-%dT%H:%M:%S
+
+# Default MQTT listener
+listener {{ mqtt_port }} 0.0.0.0
+protocol mqtt
+
+{% if mqtt_ws_enabled | default(false) | bool %}
+# WebSocket listener
+listener {{ mqtt_ws_port }} 0.0.0.0
+protocol websockets
+{% endif %}
+
+# Authentication
+{% if mqtt_auth_enabled | default(true) | bool %}
+allow_anonymous false
+password_file {{ mqtt_password_file }}
+{% else %}
+allow_anonymous true
+{% endif %}
+
+# Security
+max_inflight_messages {{ mqtt_max_inflight | default(20) }}
+max_queued_messages {{ mqtt_max_queued | default(1000) }}

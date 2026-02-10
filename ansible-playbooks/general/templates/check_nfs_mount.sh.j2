@@ -1,0 +1,11 @@
+#!/bin/bash
+# ============================================
+# NFS Mount Health Check – managed by Ansible
+# ============================================
+MOUNT_POINT="{{ nas_mount }}"
+if mountpoint -q "$MOUNT_POINT"; then
+  logger -t check_nfs_mount "NFS mount at $MOUNT_POINT is available"
+else
+  logger -t check_nfs_mount "ERROR: NFS mount at $MOUNT_POINT is not available"
+  echo "ERROR: NFS mount at $MOUNT_POINT is not available" > /dev/console
+fi

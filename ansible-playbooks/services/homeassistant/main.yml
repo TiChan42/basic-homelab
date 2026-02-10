@@ -1,0 +1,592 @@
+---
+# ==============================================================================
+# Playbook: Services - Home Assistant OS (VM)
+# Description: Provisions a Proxmox KVM virtual machine running Home Assistant
+#              Operating System with USB passthrough, Zigbee2MQTT, Matter, and
+#              automated NAS backup/restore.
+#
+# Process:
+# 1. Proxmox VM Provisioning (localhost):
+#    - Downloads the HAOS qcow2 image.
+#    - Creates a UEFI-based KVM VM (q35 machine type).
+#    - Imports the disk image and configures boot.
+#    - Passes through USB devices (e.g. Sonoff Zigbee dongle).
+#    - Starts VM and waits for HA API to become available.
+#
+# 2. Home Assistant Configuration (localhost → HA API):
+#    - Completes onboarding (creates admin user).
+#    - Configures static IP via Supervisor Network API.
+#    - Installs Add-ons: Zigbee2MQTT, Matter Server, Samba Backup.
+#    - Configures Zigbee2MQTT to use the external Mosquitto broker.
+#    - Configures MQTT integration in HA.
+#
+# 3. Backup Concept (localhost cron → HA API → NAS):
+#    - A cron job on the Proxmox host triggers HA backups via the API.
+#    - The backup file is downloaded and stored on the NAS mount.
+#    - On restore: backup is uploaded via HA API and restored.
+#
+# Architecture Note – USB Passthrough:
+#   The Sonoff Zigbee USB dongle is passed through to the HA VM,
+#   NOT to the MQTT broker container. The data flow is:
+#     Zigbee Dongle (USB) → Zigbee2MQTT (HA Add-on) → Mosquitto (LXC)
+#   Mosquitto only receives MQTT messages and does not need USB access.
+#
+# Inventory Requirements (in 'homeassistant' group):
+#   - ha_vm_id                     (unique Proxmox VMID)
+#   - ha_vm_name                   (Proxmox VM Name, matches inventory_hostname)
+#   - ansible_host                 (static IP for HA)
+# ==============================================================================
+
+# ============================================================
+# PLAY 1 – Provision the HAOS VM on the Proxmox host
+# ============================================================
+- name: Provision Home Assistant OS VM
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  tags: [provision]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    # ------------------------------------------------------------------
+    # Prerequisites
+    # ------------------------------------------------------------------
+    - name: Ensure required packages are installed
+      apt:
+        name:
+          - python3-proxmoxer
+          - wget
+          - xz-utils
+          - jq
+          - curl
+        state: present
+        update_cache: yes
+
+    # ------------------------------------------------------------------
+    # Download HAOS image
+    # ------------------------------------------------------------------
+    - name: Ensure download directory exists
+      file:
+        path: "{{ ha_image_download_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Check if HAOS image already exists
+      stat:
+        path: "{{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2"
+      register: haos_image
+
+    - name: Download HAOS qcow2 image (compressed)
+      get_url:
+        url: "{{ ha_image_url }}"
+        dest: "{{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2.xz"
+        mode: '0644'
+      when: not haos_image.stat.exists
+
+    - name: Decompress HAOS image
+      command: "xz -d -k {{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2.xz"
+      args:
+        creates: "{{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2"
+      when: not haos_image.stat.exists
+
+    # ------------------------------------------------------------------
+    # VM creation (loop over homeassistant group)
+    # ------------------------------------------------------------------
+    - name: Check if VM already exists
+      command: "qm status {{ hostvars[item]['ha_vm_id'] }}"
+      register: vm_exists
+      failed_when: false
+      changed_when: false
+      loop: "{{ groups['homeassistant'] }}"
+
+    - name: Create HAOS VM
+      command: >
+        qm create {{ hostvars[item.item]['ha_vm_id'] }}
+        --name {{ hostvars[item.item]['ha_vm_name'] }}
+        --memory {{ ha_vm_memory }}
+        --cores {{ ha_vm_cores }}
+        --cpu {{ ha_vm_cpu_type }}
+        --bios ovmf
+        --machine q35
+        --ostype l26
+        --agent 1
+        --net0 virtio,bridge={{ ha_vm_bridge }},macaddr={{ ha_vm_mac | default('') }}
+        --scsihw virtio-scsi-pci
+        --onboot 1
+        --efidisk0 {{ default_storage }}:1
+      loop: "{{ vm_exists.results }}"
+      when: item.rc != 0
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Import HAOS disk image into VM
+      command: "qm importdisk {{ hostvars[item.item]['ha_vm_id'] }} {{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2 {{ default_storage }}"
+      loop: "{{ vm_exists.results }}"
+      when: item.rc != 0
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Attach imported disk as scsi0
+      command: "qm set {{ hostvars[item.item]['ha_vm_id'] }} --scsi0 {{ default_storage }}:vm-{{ hostvars[item.item]['ha_vm_id'] }}-disk-1"
+      loop: "{{ vm_exists.results }}"
+      when: item.rc != 0
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Resize disk to desired size
+      command: "qm resize {{ hostvars[item.item]['ha_vm_id'] }} scsi0 {{ ha_vm_disk_size }}"
+      loop: "{{ vm_exists.results }}"
+      when: item.rc != 0
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Set boot order to scsi0
+      command: "qm set {{ hostvars[item.item]['ha_vm_id'] }} --boot order=scsi0"
+      loop: "{{ vm_exists.results }}"
+      when: item.rc != 0
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ------------------------------------------------------------------
+    # USB passthrough – auto-detect Zigbee dongles
+    # ------------------------------------------------------------------
+    - name: Scan USB bus for connected devices
+      command: lsusb
+      register: lsusb_output
+      changed_when: false
+
+    - name: Auto-detect known Zigbee/USB dongles
+      set_fact:
+        ha_detected_usb_devices: >-
+          {{ ha_known_zigbee_dongles
+             | selectattr('vid_pid', 'in', lsusb_output.stdout)
+             | map(attribute='vid_pid')
+             | list }}
+
+    - name: Show detected USB dongles
+      debug:
+        msg: |
+          Detected {{ ha_detected_usb_devices | length }} known dongle(s): {{ ha_detected_usb_devices | join(', ') }}
+          {% if ha_detected_usb_devices | length == 0 %}
+          WARNING: No known Zigbee dongle found!
+          Known IDs searched: {{ ha_known_zigbee_dongles | map(attribute='vid_pid') | join(', ') }}
+          Connected USB: {{ lsusb_output.stdout_lines | join(', ') }}
+          {% endif %}
+
+    - name: Merge auto-detected with manually specified USB devices
+      set_fact:
+        ha_usb_final_devices: >-
+          {{ (ha_detected_usb_devices + ha_usb_extra_devices) | unique | list }}
+
+    - name: Configure USB device passthrough for detected dongles
+      command: "qm set {{ hostvars[item]['ha_vm_id'] }} --usb{{ idx }} host={{ usb_item }},usb3=1"
+      loop: "{{ groups['homeassistant'] | product(ha_usb_final_devices) | list }}"
+      vars:
+        item: "{{ item.0 }}"
+        usb_item: "{{ item.1 }}"
+        idx: "{{ ansible_loop.index0 }}"
+      loop_control:
+        label: "VM {{ hostvars[item.0]['ha_vm_id'] }} <- USB {{ item.1 }}"
+      when: ha_usb_final_devices | length > 0
+
+    - name: Warn if no USB devices found and none manually specified
+      debug:
+        msg: >
+          WARNING: No USB devices passed through to HA VM!
+          Plug in your Zigbee dongle and re-run, or add the device ID
+          manually to 'ha_usb_extra_devices' in group_vars/all.yml.
+          Find IDs with: lsusb
+      when: ha_usb_final_devices | length == 0
+
+    # ------------------------------------------------------------------
+    # Start VM
+    # ------------------------------------------------------------------
+    - name: Start Home Assistant VM
+      command: "qm start {{ hostvars[item]['ha_vm_id'] }}"
+      register: vm_start
+      failed_when:
+        - vm_start.rc != 0
+        - "'already running' not in vm_start.stderr"
+      changed_when: vm_start.rc == 0
+      loop: "{{ groups['homeassistant'] }}"
+
+    - name: Wait for Home Assistant to become available
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/"
+        method: GET
+        status_code: [200, 401]
+        timeout: 10
+      register: ha_api_check
+      retries: 60
+      delay: 10
+      until: ha_api_check.status in [200, 401]
+      loop: "{{ groups['homeassistant'] }}"
+
+    # ------------------------------------------------------------------
+    # Host networking
+    # ------------------------------------------------------------------
+    - name: Add HA VM DNS entry to /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars[item]['ansible_host'] }} {{ hostvars[item]['ha_vm_name'] }}"
+        state: present
+        mode: '0644'
+      loop: "{{ groups['homeassistant'] }}"
+
+
+# ============================================================
+# PLAY 2 – Configure Home Assistant via API
+# ============================================================
+- name: Configure Home Assistant
+  hosts: localhost
+  become: yes
+  gather_facts: no
+  tags: [configure]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    # ------------------------------------------------------------------
+    # Onboarding
+    # ------------------------------------------------------------------
+    - name: Check if HA is already onboarded
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/onboarding"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: onboarding_status
+      failed_when: false
+      loop: "{{ groups['homeassistant'] }}"
+
+    - name: Complete HA onboarding – create admin user
+      uri:
+        url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/api/onboarding/users"
+        method: POST
+        body_format: json
+        body:
+          client_id: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/"
+          name: "{{ ha_admin_name }}"
+          username: "{{ ha_admin_user }}"
+          password: "{{ ha_admin_password }}"
+          language: "{{ ha_language }}"
+        status_code: [200]
+        timeout: 30
+      register: onboarding_result
+      when:
+        - item.status == 200
+        - item.json is defined
+        - item.json | length > 0
+      no_log: true
+      loop: "{{ onboarding_status.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ------------------------------------------------------------------
+    # Obtain access + refresh token
+    # ------------------------------------------------------------------
+    - name: Authenticate to get access and refresh token
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/auth/token"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          grant_type: password
+          username: "{{ ha_admin_user }}"
+          password: "{{ ha_admin_password }}"
+          client_id: "http://{{ hostvars[item]['ansible_host'] }}:8123/"
+        status_code: [200]
+        timeout: 30
+      register: auth_response
+      no_log: true
+      loop: "{{ groups['homeassistant'] }}"
+
+    # The access_token is short-lived and used for the rest of THIS playbook run.
+    # The refresh_token is persisted to disk so the backup cron can obtain
+    # fresh access tokens independently without manual intervention.
+
+    - name: Set access token fact for each host
+      set_fact:
+        ha_tokens: "{{ ha_tokens | default({}) | combine({ item.item: item.json.access_token }) }}"
+      loop: "{{ auth_response.results }}"
+      no_log: true
+      when: item.status == 200
+
+    # ------------------------------------------------------------------
+    # Persist refresh token for backup scripts (cron)
+    # ------------------------------------------------------------------
+    - name: Save refresh token to file for backup scripts
+      copy:
+        dest: "{{ ha_refresh_token_file }}"
+        content: "{{ item.json.refresh_token }}"
+        mode: '0600'
+        owner: root
+        group: root
+      loop: "{{ auth_response.results }}"
+      no_log: true
+      when: item.status == 200
+
+    # ------------------------------------------------------------------
+    # Configure static IP via Supervisor Network API
+    # ------------------------------------------------------------------
+    - name: Configure static IP address
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/network/interface/default/update"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        body_format: json
+        body:
+          ipv4:
+            method: "static"
+            address:
+              - "{{ hostvars[item]['ansible_host'] }}{{ network_cidr }}"
+            gateway: "{{ network_gateway }}"
+            nameservers:
+              - "{{ network_dns | default(network_gateway) }}"
+        status_code: [200]
+        timeout: 30
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Wait for HA to stabilize after network change
+      pause:
+        seconds: 15
+
+    # ------------------------------------------------------------------
+    # Install Add-ons via Supervisor API
+    # ------------------------------------------------------------------
+
+    # --- Zigbee2MQTT Add-on ---
+    - name: Add Zigbee2MQTT community add-on repository
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/store/repositories"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        body_format: json
+        body:
+          repository: "https://github.com/zigbee2mqtt/hassio-zigbee2mqtt"
+        status_code: [200]
+        timeout: 30
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Install Zigbee2MQTT add-on
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/45df7312_zigbee2mqtt/install"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        status_code: [200]
+        timeout: 120
+      register: z2m_install
+      failed_when:
+        - z2m_install.status != 200
+        - "'already installed' not in (z2m_install.json.message | default(''))"
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Configure Zigbee2MQTT add-on options
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/45df7312_zigbee2mqtt/options"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        body_format: json
+        body:
+          options:
+            data_path: /config/zigbee2mqtt
+            socat:
+              enabled: false
+            mqtt:
+              server: "mqtt://{{ ha_z2m_mqtt_broker_ip }}:{{ mqtt_port }}"
+              user: "{{ mqtt_default_user }}"
+              password: "{{ mqtt_default_password }}"
+              base_topic: zigbee2mqtt
+            serial:
+              port: "{{ ha_z2m_serial_port }}"
+              adapter: "{{ ha_z2m_serial_adapter }}"
+            frontend:
+              port: 8099
+        status_code: [200]
+        timeout: 30
+      no_log: true
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Start Zigbee2MQTT add-on
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/45df7312_zigbee2mqtt/start"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        status_code: [200]
+        timeout: 60
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Enable Zigbee2MQTT add-on auto-start
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/45df7312_zigbee2mqtt/options"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        body_format: json
+        body:
+          boot: auto
+        status_code: [200]
+        timeout: 15
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    # --- Matter Server Add-on ---
+    - name: Install Matter Server add-on
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/core_matter_server/install"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        status_code: [200]
+        timeout: 120
+      register: matter_install
+      failed_when:
+        - matter_install.status != 200
+        - "'already installed' not in (matter_install.json.message | default(''))"
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Start Matter Server add-on
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/core_matter_server/start"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        status_code: [200]
+        timeout: 60
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Enable Matter Server add-on auto-start
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/core_matter_server/options"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        body_format: json
+        body:
+          boot: auto
+        status_code: [200]
+        timeout: 15
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    # ------------------------------------------------------------------
+    # Configure MQTT Integration in HA
+    # ------------------------------------------------------------------
+    - name: Configure MQTT integration (external Mosquitto broker)
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/config/config_entries/flow"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        body_format: json
+        body:
+          handler: mqtt
+          show_advanced_options: false
+        status_code: [200]
+        timeout: 30
+      register: mqtt_flow
+      failed_when: false
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Submit MQTT configuration
+      uri:
+        url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/api/config/config_entries/flow/{{ item.json.flow_id }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item.item] }}"
+        body_format: json
+        body:
+          broker: "{{ ha_z2m_mqtt_broker_ip }}"
+          port: "{{ mqtt_port | int }}"
+          username: "{{ mqtt_default_user }}"
+          password: "{{ mqtt_default_password }}"
+          discovery: true
+        status_code: [200]
+        timeout: 30
+      when:
+        - item.status == 200
+        - item.item in ha_tokens
+      no_log: true
+      loop: "{{ mqtt_flow.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ------------------------------------------------------------------
+    # Verification
+    # ------------------------------------------------------------------
+    - name: Verify Home Assistant is healthy
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        status_code: [200]
+        timeout: 10
+      register: ha_final_check
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Print HA status
+      debug:
+        msg: "HA ({{ item.item }}) running at http://{{ hostvars[item.item]['ansible_host'] }}:8123 – Message: {{ item.json.message }}"
+      loop: "{{ ha_final_check.results }}"
+      when: item.status is defined and item.status == 200
+
+
+# ============================================================
+# PLAY 3 – Set up backup to NAS (runs on Proxmox host)
+# ============================================================
+- name: Setup Home Assistant Backup to NAS
+  hosts: localhost
+  become: yes
+  gather_facts: no
+  tags: [backup]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    # ------------------------------------------------------------------
+    # Ensure backup directory on NAS exists
+    # ------------------------------------------------------------------
+    - name: Ensure HA backup directory on NAS exists
+      file:
+        path: "{{ nas_backup_mount }}/homeassistant"
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+
+    # ------------------------------------------------------------------
+    # Backup script
+    # ------------------------------------------------------------------
+    - name: Deploy HA backup script
+      template:
+        src: templates/ha_backup.sh.j2
+        dest: "{{ ha_backup_script_path }}"
+        mode: '0750'
+
+    # ------------------------------------------------------------------
+    # Cron jobs
+    # ------------------------------------------------------------------
+    - name: Set up periodic HA backup via cron
+      cron:
+        name: "Home Assistant backup to NAS"
+        minute: "{{ ha_backup_cron_minute }}"
+        hour: "{{ ha_backup_cron_hour }}"
+        job: "{{ ha_backup_script_path }} 2>&1 | logger -t ha-backup-cron"
+        user: root
+        state: present

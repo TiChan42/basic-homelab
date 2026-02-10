@@ -1,5 +1,5 @@
 # mount-persistent-storage.yml
-- name: Mount OMV NFS share locally on this Proxmox host
+- name: Mount NAS NFS share on Proxmox host
   hosts: localhost
   connection: local
   become: true
@@ -12,9 +12,9 @@
         state: present
         update_cache: true
 
-    - name: Ensure mount directory exists
+    - name: Ensure NAS base mount directory exists
       ansible.builtin.file:
-        path: "{{ mount_persistent_storage_mount_point }}"
+        path: "{{ nas_mount }}"
         state: directory
         owner: root
         group: root
@@ -22,14 +22,25 @@
 
     - name: Persistently mount NFS share (writes /etc/fstab and mounts)
       ansible.posix.mount:
-        path: "{{ mount_persistent_storage_mount_point }}"
-        src: "{{ mount_persistent_storage_nas_ip }}:{{ mount_persistent_storage_nas_export }}"
+        path: "{{ nas_mount }}"
+        src: "{{ nas_ip }}:{{ nas_nfs_export }}"
         fstype: nfs
-        opts: "{{ mount_persistent_storage_nfs_opts }}"
+        opts: "{{ nas_nfs_opts }}"
         state: mounted
 
+    - name: Ensure standard subdirectories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - "{{ nas_services_mount }}"
+        - "{{ nas_backup_mount }}"
+
     - name: Verify mount is active
-      ansible.builtin.command: "findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS {{ mount_persistent_storage_mount_point }}"
+      ansible.builtin.command: "findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS {{ nas_mount }}"
       register: findmnt_out
       changed_when: false
 

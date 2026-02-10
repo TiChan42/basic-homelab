@@ -1,32 +1,137 @@
 # ansible-playbooks/group_vars/all.example.yml
-# This is an example configuration file. 
+# This is an example configuration file.
 # Copy this to 'all.yml' and adjust values to your needs.
 
+# ==============================================================================
 # Proxmox API Connection
+# ==============================================================================
 proxmox_api_host: "localhost"
 proxmox_api_user: "root@pam"
-proxmox_api_token_id: "ansible" 
-proxmox_api_token_secret: "YOUR_SECRET_HERE" # Use ansible-vault in production!
+proxmox_api_token_id: "ansible"
+proxmox_api_token_secret: "YOUR_SECRET_HERE"     # CHANGE THIS – use ansible-vault!
 proxmox_node: "pve"
 
-# Repository values
-repo_url: "https://github.com/TiChan42/basic-homelab.git"  # Replace with actual repo URL
-repo_path: "{{ playbook_dir }}/../../"  # Dynamically set to the parent directory of ansible-playbooks
+# ==============================================================================
+# Repository
+# ==============================================================================
+repo_url: "https://github.com/TiChan42/basic-homelab.git"  # CHANGE THIS
+repo_path: "{{ playbook_dir }}/../../"
 
-# Variables for mount-persistent-storage.yml
-mount_persistent_storage_nas_ip: "192.168.1.100" # CHANGE THIS
-mount_persistent_storage_nas_export: "/export/proxmox-data" # CHANGE THIS
-mount_persistent_storage_mount_point: "/mnt/nas/services"
-mount_persistent_storage_nfs_opts: "rw,vers=3,noatime,_netdev,nofail,timeo=600,retrans=2"
+# ==============================================================================
+# Network Defaults (shared across all services)
+# ==============================================================================
+network_cidr: "/24"                              # CHANGE THIS if needed
+network_gateway: "192.168.1.1"                   # CHANGE THIS
+network_dns: "192.168.1.1"                       # CHANGE THIS
 
-# Variables for check-mount.yml
-check_mount_nfs_script_path: "/usr/local/bin/check_nfs_mount.sh"
-check_mount_nfs_cron_minute: "*/1" # every minute
+# ==============================================================================
+# NAS / NFS Storage (shared across all services)
+# ==============================================================================
+nas_ip: "192.168.1.100"                          # CHANGE THIS
+nas_nfs_export: "/export/proxmox-data"           # CHANGE THIS
+nas_nfs_opts: "rw,vers=3,noatime,_netdev,nofail,timeo=600,retrans=2"
 
-# Variables for setup-auto-deployment.yml
+# Base mount point – mounted once by mount-persistent-storage.yml
+nas_mount: "/mnt/nas"
+
+# Derived paths (subdirectories under the base mount)
+nas_services_mount: "{{ nas_mount }}/services"
+nas_backup_mount: "{{ nas_mount }}/backups"
+
+# ==============================================================================
+# Proxmox Defaults (shared across LXC containers and VMs)
+# ==============================================================================
+default_lxc_template: "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
+default_storage: "local-lvm"
+
+# ==============================================================================
+# Auto-Deployment (setup-auto-deployment.yml)
+# ==============================================================================
 polling_script_path: "/usr/local/bin/homelab_auto_deployment.sh"
 polling_cron_name: "homelab-auto-deployment"
 polling_minute: 0
 polling_hour: 3
 
-# Webserver variables are now defined per host in inventory/hosts.yml\n# See the 'webservers' group for configuration.\n# Required per host: webserver_container_id, webserver_container_ip,\n#   webserver_port, webserver_git_repo, webserver_git_branch
+# ==============================================================================
+# NFS Health Check (check-mount-nfs.yml)
+# ==============================================================================
+check_mount_nfs_script_path: "/usr/local/bin/check_nfs_mount.sh"
+check_mount_nfs_cron_minute: "*/1"
+
+# ==============================================================================
+# Webserver – Service-specific settings
+# ==============================================================================
+# Webserver variables are defined per host in inventory/hosts.yml.
+# See the 'webservers' group for configuration.
+# Required per host: webserver_container_id, ansible_host,
+#   webserver_port, webserver_git_repo, webserver_git_branch
+
+# ==============================================================================
+# MQTT Broker – Service-specific settings
+# ==============================================================================
+mqtt_container_memory: "256"
+mqtt_container_cores: "1"
+mqtt_container_rootfs: "{{ default_storage }}:4"
+mqtt_port: "1883"
+mqtt_ws_port: "9001"
+mqtt_ws_enabled: false
+mqtt_auth_enabled: true
+mqtt_default_user: "mqttuser"                    # CHANGE THIS
+mqtt_default_password: "CHANGE_ME_NOW"           # CHANGE THIS – use ansible-vault!
+mqtt_data_dir: "/var/lib/mosquitto"
+mqtt_log_dir: "/var/log/mosquitto"
+mqtt_password_file: "/etc/mosquitto/passwd"
+mqtt_autosave_interval: 300
+mqtt_max_inflight: 20
+mqtt_max_queued: 1000
+mqtt_backup_script_path: "/usr/local/bin/mqtt_backup.sh"
+mqtt_restore_script_path: "/usr/local/bin/mqtt_restore.sh"
+mqtt_backup_cron_minute: "0"
+mqtt_backup_cron_hour: "*/4"                     # Every 4 hours
+
+# ==============================================================================
+# Home Assistant – Service-specific settings
+# ==============================================================================
+ha_os_version: "14.1"                            # HAOS version – check releases
+ha_image_url: "https://github.com/home-assistant/operating-system/releases/download/{{ ha_os_version }}/haos_ova-{{ ha_os_version }}.qcow2.xz"
+ha_image_download_dir: "/tmp/haos"
+ha_vm_memory: 4096
+ha_vm_cores: 4
+ha_vm_cpu_type: "host"
+ha_vm_disk_size: "64G"
+ha_vm_bridge: "vmbr0"
+ha_vm_mac: ""                                    # Leave empty for auto-generated
+
+# HA Admin User
+ha_admin_name: "Admin"                           # CHANGE THIS
+ha_admin_user: "admin"                           # CHANGE THIS
+ha_admin_password: "CHANGE_ME_NOW"               # CHANGE THIS – use ansible-vault!
+ha_language: "de"
+
+# USB Passthrough – Auto-Detection
+ha_known_zigbee_dongles:
+  - { vid_pid: "10c4:ea60", name: "Sonoff Zigbee 3.0 USB Dongle Plus (EFR32)" }
+  - { vid_pid: "10c4:8a2a", name: "Sonoff Zigbee 3.0 USB Dongle Plus V2" }
+  - { vid_pid: "1a86:55d4", name: "Sonoff Zigbee 3.0 USB Dongle Plus E" }
+  - { vid_pid: "1a86:7523", name: "Sonoff Zigbee 3.0 USB Dongle (CH340)" }
+  - { vid_pid: "0451:16a8", name: "TI CC2531 Zigbee USB Dongle" }
+  - { vid_pid: "1cf1:0030", name: "ConBee II" }
+  - { vid_pid: "0403:6015", name: "ConBee III" }
+  - { vid_pid: "1a86:55d4", name: "SMLIGHT SLZB-07" }
+
+ha_usb_extra_devices: []
+
+# Zigbee2MQTT
+ha_z2m_mqtt_broker_ip: "{{ hostvars['mqtt-broker']['ansible_host'] | default('192.168.1.60') }}"
+ha_z2m_serial_port: "/dev/ttyUSB0"
+ha_z2m_serial_adapter: "ezsp"                    # ezsp, zstack, deconz, zigate
+
+# HA Backup settings
+ha_refresh_token_file: "/etc/ha_backup_refresh_token"  # Auto-generated during setup
+ha_backup_script_path: "/usr/local/bin/ha_backup.sh"
+ha_restore_script_path: "/usr/local/bin/ha_restore.sh"
+ha_healthcheck_script_path: "/usr/local/bin/ha_healthcheck.sh"
+ha_backup_cron_minute: "30"
+ha_backup_cron_hour: "2"                         # Daily at 02:30
+ha_backup_keep_count: 3
+ha_healthcheck_cron_minute: "*/10"               # Every 10 minutes

@@ -1,0 +1,37 @@
+#!/bin/bash
+# ============================================
+# Homelab Auto-Deployment Polling Script
+# Managed by Ansible
+# ============================================
+REPO_PATH="{{ repo_path }}"
+SCRIPT_DIR="$REPO_PATH/scripts"
+
+cd "$REPO_PATH" || exit 1
+
+# Fetch latest changes
+git fetch origin
+
+# Check if local main is behind origin/main
+LOCAL=$(git rev-parse HEAD)
+REMOTE=$(git rev-parse origin/main)
+
+if [ "$LOCAL" != "$REMOTE" ]; then
+    echo "New changes detected. Deploying..."
+
+    # Pull latest changes
+    git pull origin main
+
+    # Run install script
+    if [ -f "$SCRIPT_DIR/install-necessary-apt-packages.sh" ]; then
+        bash "$SCRIPT_DIR/install-necessary-apt-packages.sh"
+    fi
+
+    # Run playbooks script
+    if [ -f "$SCRIPT_DIR/run-all-playbooks.sh" ]; then
+        bash "$SCRIPT_DIR/run-all-playbooks.sh"
+    fi
+
+    echo "Deployment completed."
+else
+    echo "No new changes."
+fi

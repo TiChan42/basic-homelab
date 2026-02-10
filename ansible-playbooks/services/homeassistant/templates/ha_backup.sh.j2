@@ -1,0 +1,148 @@
+#!/bin/bash
+# ============================================
+# Home Assistant Backup Script
+# Auto-generated loop for all HA instances
+# Uses refresh token to obtain fresh access tokens.
+# ============================================
+set -euo pipefail
+
+REFRESH_TOKEN_FILE="{{ ha_refresh_token_file }}"
+BACKUP_DIR_ROOT="{{ nas_backup_mount }}/homeassistant"
+MAX_BACKUPS={{ ha_backup_keep_count }}
+
+# Verify refresh token file exists
+if [ ! -f "$REFRESH_TOKEN_FILE" ]; then
+  logger -t "ha-backup" "ERROR: Refresh token file not found at $REFRESH_TOKEN_FILE"
+  logger -t "ha-backup" "Re-run the homeassistant playbook to generate it."
+  exit 1
+fi
+REFRESH_TOKEN=$(cat "$REFRESH_TOKEN_FILE")
+
+# List of HA instances (IP:NAME)
+HA_INSTANCES=(
+{% for item in groups['homeassistant'] %}
+  "{{ hostvars[item]['ansible_host'] }}:{{ item }}"
+{% endfor %}
+)
+
+# -----------------------------------------------
+# Helper: obtain a fresh access token via refresh
+# -----------------------------------------------
+get_access_token() {
+  local HA_URL="$1"
+  local TOKEN_RESPONSE
+  TOKEN_RESPONSE=$(curl -s -X POST "$HA_URL/auth/token" \
+    -d "grant_type=refresh_token" \
+    -d "client_id=$HA_URL/" \
+    -d "refresh_token=$REFRESH_TOKEN")
+
+  echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty'
+}
+
+for instance in "${HA_INSTANCES[@]}"; do
+  IP="${instance%%:*}"
+  NAME="${instance##*:}"
+  HA_URL="http://$IP:8123"
+  LOG_TAG="ha-backup-$NAME"
+  BACKUP_DIR="$BACKUP_DIR_ROOT/$NAME"
+
+  mkdir -p "$BACKUP_DIR"
+  logger -t "$LOG_TAG" "Starting backup for $NAME ($IP)..."
+
+  # Obtain fresh access token
+  HA_TOKEN=$(get_access_token "$HA_URL")
+  if [ -z "$HA_TOKEN" ]; then
+    logger -t "$LOG_TAG" "ERROR: Failed to obtain access token. Skipping."
+    continue
+  fi
+
+  # Check if API is reachable
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "Authorization: Bearer $HA_TOKEN" \
+    "$HA_URL/api/" || echo "000")
+
+  if [ "$HTTP_CODE" != "200" ]; then
+    logger -t "$LOG_TAG" "ERROR: HA API not reachable (HTTP $HTTP_CODE). Skipping."
+    continue
+  fi
+
+  # Trigger backup
+  BACKUP_RESPONSE=$(curl -s -X POST \
+    -H "Authorization: Bearer $HA_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "automated_nas_backup"}' \
+    "$HA_URL/api/hassio/backups/new/full")
+
+  BACKUP_SLUG=$(echo "$BACKUP_RESPONSE" | jq -r '.data.slug // empty')
+
+  if [ -z "$BACKUP_SLUG" ]; then
+    logger -t "$LOG_TAG" "ERROR: Failed to create backup."
+    continue
+  fi
+
+  # Wait for completion
+  for i in $(seq 1 60); do
+    STATUS=$(curl -s -H "Authorization: Bearer $HA_TOKEN" \
+      "$HA_URL/api/hassio/backups/$BACKUP_SLUG/info" | jq -r '.data.type // empty')
+    if [ -n "$STATUS" ]; then
+      break
+    fi
+    sleep 5
+  done
+
+  # Download to temporary file first
+  TMP_FILE="$BACKUP_DIR/.ha_backup_downloading.tar"
+  FINAL_FILE="$BACKUP_DIR/ha_backup_latest.tar"
+  PREVIOUS_FILE="$BACKUP_DIR/ha_backup_previous.tar"
+  MIN_BACKUP_SIZE=10240  # 10 KB – a valid HA backup is always larger
+
+  DOWNLOAD_HTTP=$(curl -s -o "$TMP_FILE" -w "%{http_code}" \
+    -H "Authorization: Bearer $HA_TOKEN" \
+    "$HA_URL/api/hassio/backups/$BACKUP_SLUG/download")
+
+  # Validate: HTTP status
+  if [ "$DOWNLOAD_HTTP" != "200" ]; then
+    logger -t "$LOG_TAG" "ERROR: Download failed (HTTP $DOWNLOAD_HTTP). Keeping previous backup."
+    rm -f "$TMP_FILE"
+    continue
+  fi
+
+  # Validate: file exists and has content
+  if [ ! -s "$TMP_FILE" ]; then
+    logger -t "$LOG_TAG" "ERROR: Downloaded file is empty. Keeping previous backup."
+    rm -f "$TMP_FILE"
+    continue
+  fi
+
+  # Validate: minimum size
+  FILE_SIZE=$(stat -c%s "$TMP_FILE" 2>/dev/null || stat -f%z "$TMP_FILE" 2>/dev/null || echo "0")
+  if [ "$FILE_SIZE" -lt "$MIN_BACKUP_SIZE" ]; then
+    logger -t "$LOG_TAG" "ERROR: Backup too small (${FILE_SIZE} bytes). Keeping previous backup."
+    rm -f "$TMP_FILE"
+    continue
+  fi
+
+  # Validate: valid tar archive
+  if ! tar -tf "$TMP_FILE" > /dev/null 2>&1; then
+    logger -t "$LOG_TAG" "ERROR: Downloaded file is not a valid tar archive. Keeping previous backup."
+    rm -f "$TMP_FILE"
+    continue
+  fi
+
+  # All checks passed – rotate and promote
+  if [ -f "$FINAL_FILE" ]; then
+    mv -f "$FINAL_FILE" "$PREVIOUS_FILE"
+    logger -t "$LOG_TAG" "Previous backup rotated to $(basename "$PREVIOUS_FILE")."
+  fi
+  mv -f "$TMP_FILE" "$FINAL_FILE"
+
+  # Cleanup old backups in HA
+  ALL_SLUGS=$(curl -s -H "Authorization: Bearer $HA_TOKEN" \
+    "$HA_URL/api/hassio/backups" | jq -r '.data.backups | sort_by(.date) | reverse | .['"$MAX_BACKUPS"':] | .[].slug')
+
+  for OLD_SLUG in $ALL_SLUGS; do
+     curl -s -X DELETE -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/hassio/backups/$OLD_SLUG"
+  done
+
+  logger -t "$LOG_TAG" "Backup completed (${FILE_SIZE} bytes) -> $FINAL_FILE"
+done

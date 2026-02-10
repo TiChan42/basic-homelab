@@ -18,7 +18,7 @@
 #
 # Inventory Requirements (per host in 'webservers' group):
 #   - webserver_container_id       (unique Proxmox VMID)
-#   - webserver_container_ip       (static IP for the container)
+#   - ansible_host                 (static IP for the container)
 #   - webserver_port               (port the app listens on)
 #   - webserver_git_repo           (Git repository URL)
 #   - webserver_git_branch         (Git branch, default: main)
@@ -31,7 +31,7 @@
   gather_facts: yes
   tags: [provision]
   vars_files:
-    - "../inventory/group_vars/all.yml"
+    - "../../inventory/group_vars/all.yml"
 
   tasks:
     # --------------------------------------------------------------------------
@@ -43,22 +43,14 @@
         state: present
         update_cache: yes
 
-    - name: Collect unique OS templates needed
-      set_fact:
-        _templates_needed: >-
-          {{ groups['webservers']
-             | map('extract', hostvars, 'webserver_container_template')
-             | unique | list }}
-
     - name: Get list of available OS templates
       command: "pveam list local"
       register: pveam_list
       changed_when: false
 
-    - name: Download missing OS templates
-      command: "pveam download local {{ item.split('/')[-1] }}"
-      loop: "{{ _templates_needed }}"
-      when: item.split('/')[-1] not in pveam_list.stdout
+    - name: Download OS template if missing
+      command: "pveam download local {{ default_lxc_template.split('/')[-1] }}"
+      when: default_lxc_template.split('/')[-1] not in pveam_list.stdout
 
     # --------------------------------------------------------------------------
     # Container Management (per webserver host)
@@ -72,13 +64,13 @@
         node: "{{ proxmox_node }}"
         vmid: "{{ hostvars[item]['webserver_container_id'] }}"
         hostname: "{{ item }}"
-        ostemplate: "{{ hostvars[item]['webserver_container_template'] }}"
+        ostemplate: "{{ default_lxc_template }}"
         cores: "{{ hostvars[item]['webserver_container_cores'] }}"
         memory: "{{ hostvars[item]['webserver_container_memory'] }}"
         swap: 1024
         disk: "{{ hostvars[item]['webserver_container_rootfs'] }}"
         netif:
-          net0: "name=eth0,bridge=vmbr0,ip={{ hostvars[item]['webserver_container_ip'] }}{{ hostvars[item]['webserver_container_cidr'] }},gw={{ hostvars[item]['webserver_container_gateway'] }}"
+          net0: "name=eth0,bridge=vmbr0,ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
         pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
         onboot: yes
         state: present
@@ -101,7 +93,7 @@
 
     - name: Wait for SSH to become available
       wait_for:
-        host: "{{ hostvars[item]['webserver_container_ip'] }}"
+        host: "{{ hostvars[item]['ansible_host'] }}"
         port: 22
         timeout: 60
         search_regex: OpenSSH
@@ -116,7 +108,7 @@
     - name: Add container DNS entries to /etc/hosts
       lineinfile:
         path: /etc/hosts
-        line: "{{ hostvars[item]['webserver_container_ip'] }} {{ item }}"
+        line: "{{ hostvars[item]['ansible_host'] }} {{ item }}"
         state: present
         mode: '0644'
       loop: "{{ groups['webservers'] }}"
@@ -130,7 +122,7 @@
         protocol: tcp
         destination_port: "{{ hostvars[item]['webserver_port'] }}"
         jump: DNAT
-        to_destination: "{{ hostvars[item]['webserver_container_ip'] }}:{{ hostvars[item]['webserver_port'] }}"
+        to_destination: "{{ hostvars[item]['ansible_host'] }}:{{ hostvars[item]['webserver_port'] }}"
         comment: "Forward {{ hostvars[item]['webserver_port'] }} -> {{ item }}"
       loop: "{{ groups['webservers'] }}"
       loop_control:
@@ -142,28 +134,16 @@
   become: yes
   tags: [deploy]
   vars_files:
-    - "../inventory/group_vars/all.yml"
+    - "../../inventory/group_vars/all.yml"
 
   tasks:
     # --------------------------------------------------------------------------
     # Guest Networking (Netplan)
     # --------------------------------------------------------------------------
     - name: Configure static networking (Netplan)
-      copy:
+      template:
+        src: templates/netplan.yaml.j2
         dest: /etc/netplan/99-ansible-static.yaml
-        content: |
-          network:
-            version: 2
-            ethernets:
-              eth0:
-                dhcp4: no
-                addresses:
-                  - {{ webserver_container_ip }}{{ webserver_container_cidr }}
-                nameservers:
-                  addresses: [{{ webserver_container_gateway }}]
-                routes:
-                  - to: default
-                    via: {{ webserver_container_gateway }}
         mode: '0600'
       register: netplan_config
 
@@ -246,25 +226,9 @@
     # Service Management
     # --------------------------------------------------------------------------
     - name: Configure systemd service
-      copy:
+      template:
+        src: templates/webserver.service.j2
         dest: "/etc/systemd/system/{{ inventory_hostname }}.service"
-        content: |
-          [Unit]
-          Description=Webserver {{ inventory_hostname }}
-          After=network.target
-
-          [Service]
-          Type=simple
-          User=root
-          WorkingDirectory=/opt/{{ inventory_hostname }}
-          ExecStart=/usr/bin/npm start
-          Environment=PORT={{ webserver_port }}
-          Environment=HOST=0.0.0.0
-          Restart=always
-          RestartSec=10
-
-          [Install]
-          WantedBy=multi-user.target
         mode: '0644'
       notify: Restart webserver service
 
@@ -280,4 +244,3 @@
       systemd:
         name: "{{ inventory_hostname }}"
         state: restarted
-

@@ -8,17 +8,9 @@
 
   tasks:
     - name: Create check script
-      ansible.builtin.copy:
+      ansible.builtin.template:
+        src: templates/check_nfs_mount.sh.j2
         dest: "{{ check_mount_nfs_script_path }}"
-        content: |
-          #!/bin/bash
-          MOUNT_POINT="{{ mount_persistent_storage_mount_point }}"
-          if mountpoint -q "$MOUNT_POINT"; then
-            logger -t check_nfs_mount "NFS mount at $MOUNT_POINT is available"
-          else
-            logger -t check_nfs_mount "ERROR: NFS mount at $MOUNT_POINT is not available"
-            echo "ERROR: NFS mount at $MOUNT_POINT is not available" > /dev/console
-          fi
         mode: "0755"
         owner: root
         group: root

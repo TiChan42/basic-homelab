@@ -1,0 +1,62 @@
+#!/bin/bash
+# ============================================
+# MQTT Broker Restore Script – managed by Ansible
+# Restores data from NAS if local data is missing
+# ============================================
+set -euo pipefail
+
+BACKUP_DIR="{{ nas_backup_mount }}/mqtt-broker"
+DATA_DIR="{{ mqtt_data_dir }}"
+CONF_FILE="/etc/mosquitto/mosquitto.conf"
+PASSWD_FILE="{{ mqtt_password_file }}"
+LOG_TAG="mqtt-restore"
+
+# Wait for NFS mount (max 60 seconds)
+for i in $(seq 1 12); do
+  mountpoint -q "{{ nas_backup_mount }}" && break
+  logger -t "$LOG_TAG" "Waiting for NFS mount... ($i/12)"
+  sleep 5
+done
+
+if ! mountpoint -q "{{ nas_backup_mount }}"; then
+  logger -t "$LOG_TAG" "ERROR: NFS mount not available. Skipping restore."
+  exit 1
+fi
+
+# Check if local data is missing or empty
+DATA_COUNT=$(find "$DATA_DIR" -type f 2>/dev/null | wc -l)
+
+if [ "$DATA_COUNT" -gt 0 ]; then
+  logger -t "$LOG_TAG" "Local data present ($DATA_COUNT files). No restore needed."
+  exit 0
+fi
+
+# Check if NAS backup exists
+if [ ! -f "$BACKUP_DIR/mosquitto.conf" ]; then
+  logger -t "$LOG_TAG" "No NAS backup found. Starting fresh."
+  exit 0
+fi
+
+logger -t "$LOG_TAG" "Local data missing – restoring from NAS backup..."
+
+# Stop Mosquitto if running
+systemctl stop mosquitto 2>/dev/null || true
+
+# Restore config
+cp -f "$BACKUP_DIR/mosquitto.conf" "$CONF_FILE"
+chown mosquitto:mosquitto "$CONF_FILE"
+chmod 640 "$CONF_FILE"
+
+# Restore persistence data
+mkdir -p "$DATA_DIR"
+rsync -a "$BACKUP_DIR/data/" "$DATA_DIR/"
+chown -R mosquitto:mosquitto "$DATA_DIR"
+
+# Restore password file
+if [ -f "$BACKUP_DIR/passwd" ]; then
+  cp -f "$BACKUP_DIR/passwd" "$PASSWD_FILE"
+  chown mosquitto:mosquitto "$PASSWD_FILE"
+  chmod 600 "$PASSWD_FILE"
+fi
+
+logger -t "$LOG_TAG" "Restore completed. Mosquitto will be started by systemd."

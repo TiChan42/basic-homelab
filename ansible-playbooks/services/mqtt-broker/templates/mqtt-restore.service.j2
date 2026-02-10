@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore MQTT Broker data from NAS backup
+After=network-online.target remote-fs.target
+Before=mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ mqtt_restore_script_path }}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
