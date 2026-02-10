@@ -56,6 +56,7 @@
       apt:
         name:
           - python3-proxmoxer
+          - python3-pip
           - wget
           - xz-utils
           - jq
@@ -393,9 +394,15 @@
       loop: "{{ groups['homeassistant'] }}"
       when: item in (ha_auth_codes | default({}))
 
-    # The access_token is short-lived and used for the rest of THIS playbook run.
-    # The refresh_token is persisted to disk so the backup cron can obtain
-    # fresh access tokens independently without manual intervention.
+    # The access_token from login flow is short-lived (30 min) but sufficient
+    # for the duration of this playbook run.  The refresh_token is persisted
+    # to disk so the backup cron can obtain fresh access tokens later.
+    #
+    # NOTE: The HA Core HTTP proxy (/api/hassio/*) restricts which Supervisor
+    # endpoints are accessible – most paths (network, addons, store) are NOT
+    # whitelisted and always return 401.  We therefore call Supervisor API
+    # endpoints via the WebSocket command "supervisor/api" instead, using the
+    # helper script ha_supervisor_api.py.
 
     - name: Set access token fact for each host
       set_fact:
@@ -496,27 +503,40 @@
         label: "{{ item.item }}"
 
     # ------------------------------------------------------------------
-    # Configure static IP via Supervisor Network API
+    # Deploy WebSocket helper for Supervisor API calls
+    # ------------------------------------------------------------------
+    - name: Install Python websocket-client package
+      pip:
+        name: websocket-client
+        state: present
+
+    - name: Deploy Supervisor API WebSocket helper script
+      copy:
+        src: files/ha_supervisor_api.py
+        dest: /usr/local/bin/ha_supervisor_api.py
+        mode: '0755'
+
+    # ------------------------------------------------------------------
+    # Configure static IP via Supervisor Network API (WebSocket)
     # ------------------------------------------------------------------
     - name: Configure static IP address
-      uri:
-        url: "http://{{ ha_initial_ips[item] }}:8123/api/hassio/network/interface/default/update"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ ha_tokens[item] }}"
-        body_format: json
-        body:
-          ipv4:
-            method: "static"
-            address:
-              - "{{ hostvars[item]['ansible_host'] }}{{ network_cidr }}"
-            gateway: "{{ network_gateway }}"
-            nameservers:
-              - "{{ network_dns | default(network_gateway) }}"
-        status_code: [200]
-        timeout: 30
+      shell: >-
+        echo {{ _ip_body | quote }} |
+        python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ ha_initial_ips[item] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /network/interface/default/update
+        -
+      vars:
+        _ip_body: >-
+          {{ {"ipv4": {"method": "static",
+              "address": [hostvars[item]["ansible_host"] + network_cidr],
+              "gateway": network_gateway,
+              "nameservers": [network_dns | default(network_gateway)]}} | to_json }}
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
+      no_log: true
 
     - name: Wait for HA to become available on static IP
       uri:
@@ -590,7 +610,7 @@
       loop_control:
         label: "{{ item.item.item }}"
 
-    - name: Update access tokens after IP change
+    - name: Update short-lived tokens after IP change
       set_fact:
         ha_tokens: "{{ ha_tokens | combine({ _host: item.json.access_token }) }}"
       vars:
@@ -607,132 +627,140 @@
       loop: "{{ groups['homeassistant'] }}"
 
     # ------------------------------------------------------------------
-    # Install Add-ons via Supervisor API
+    # Install Add-ons via Supervisor API (WebSocket)
     # ------------------------------------------------------------------
 
     # --- Zigbee2MQTT Add-on ---
     - name: Add Zigbee2MQTT community add-on repository
-      uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/store/repositories"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ ha_tokens[item] }}"
-        body_format: json
-        body:
-          repository: "https://github.com/zigbee2mqtt/hassio-zigbee2mqtt"
-        status_code: [200]
-        timeout: 30
+      shell: >-
+        python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ hostvars[item]['ansible_host'] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /store/repositories
+        '{"repository": "https://github.com/zigbee2mqtt/hassio-zigbee2mqtt"}'
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
+      no_log: true
+
+    - name: Reload add-on store after adding repository
+      shell: >-
+        python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ hostvars[item]['ansible_host'] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /store/reload
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+      no_log: true
+
+    - name: Wait for store to settle after reload
+      pause:
+        seconds: 10
 
     - name: Install Zigbee2MQTT add-on
-      uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/45df7312_zigbee2mqtt/install"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ ha_tokens[item] }}"
-        status_code: [200]
-        timeout: 120
+      shell: >-
+        python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ hostvars[item]['ansible_host'] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /store/addons/45df7312_zigbee2mqtt/install
       register: z2m_install
       failed_when:
-        - z2m_install.status != 200
-        - "'already installed' not in (z2m_install.json.message | default(''))"
+        - z2m_install.rc != 0
+        - "'already installed' not in (z2m_install.stderr | default(''))"
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
+      no_log: true
 
     - name: Configure Zigbee2MQTT add-on options
-      uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/45df7312_zigbee2mqtt/options"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ ha_tokens[item] }}"
-        body_format: json
-        body:
-          options:
-            data_path: /config/zigbee2mqtt
-            socat:
-              enabled: false
-            mqtt:
-              server: "mqtt://{{ ha_z2m_mqtt_broker_ip }}:{{ mqtt_port }}"
-              user: "{{ mqtt_default_user }}"
-              password: "{{ mqtt_default_password }}"
-              base_topic: zigbee2mqtt
-            serial:
-              port: "{{ ha_z2m_serial_port }}"
-              adapter: "{{ ha_z2m_serial_adapter }}"
-            frontend:
-              port: 8099
-        status_code: [200]
-        timeout: 30
-      no_log: true
+      shell: >-
+        echo {{ _z2m_opts | quote }} |
+        python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ hostvars[item]['ansible_host'] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /addons/45df7312_zigbee2mqtt/options
+        -
+      vars:
+        _z2m_opts: >-
+          {{ {"options": {
+              "data_path": "/config/zigbee2mqtt",
+              "socat": {"enabled": false},
+              "mqtt": {
+                "server": "mqtt://" + ha_z2m_mqtt_broker_ip + ":" + (mqtt_port | string),
+                "user": mqtt_default_user,
+                "password": mqtt_default_password,
+                "base_topic": "zigbee2mqtt"},
+              "serial": {
+                "port": ha_z2m_serial_port,
+                "adapter": ha_z2m_serial_adapter},
+              "frontend": {"port": 8099}}} | to_json }}
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
+      no_log: true
 
     - name: Start Zigbee2MQTT add-on
-      uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/45df7312_zigbee2mqtt/start"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ ha_tokens[item] }}"
-        status_code: [200]
-        timeout: 60
+      shell: >-
+        python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ hostvars[item]['ansible_host'] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /addons/45df7312_zigbee2mqtt/start
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
+      no_log: true
 
     - name: Enable Zigbee2MQTT add-on auto-start
-      uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/45df7312_zigbee2mqtt/options"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ ha_tokens[item] }}"
-        body_format: json
-        body:
-          boot: auto
-        status_code: [200]
-        timeout: 15
+      shell: >-
+        python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ hostvars[item]['ansible_host'] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /addons/45df7312_zigbee2mqtt/options
+        '{"boot": "auto"}'
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
+      no_log: true
 
     # --- Matter Server Add-on ---
     - name: Install Matter Server add-on
-      uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/core_matter_server/install"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ ha_tokens[item] }}"
-        status_code: [200]
-        timeout: 120
+      shell: >-
+        python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ hostvars[item]['ansible_host'] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /store/addons/core_matter_server/install
       register: matter_install
       failed_when:
-        - matter_install.status != 200
-        - "'already installed' not in (matter_install.json.message | default(''))"
+        - matter_install.rc != 0
+        - "'already installed' not in (matter_install.stderr | default(''))"
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
+      no_log: true
 
     - name: Start Matter Server add-on
-      uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/core_matter_server/start"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ ha_tokens[item] }}"
-        status_code: [200]
-        timeout: 60
+      shell: >-
+        python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ hostvars[item]['ansible_host'] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /addons/core_matter_server/start
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
+      no_log: true
 
     - name: Enable Matter Server add-on auto-start
-      uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/hassio/addons/core_matter_server/options"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ ha_tokens[item] }}"
-        body_format: json
-        body:
-          boot: auto
-        status_code: [200]
-        timeout: 15
+      shell: >-
+        python3 /usr/local/bin/ha_supervisor_api.py
+        "http://{{ hostvars[item]['ansible_host'] }}:8123"
+        "{{ ha_tokens[item] }}"
+        POST
+        /addons/core_matter_server/options
+        '{"boot": "auto"}'
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
+      no_log: true
 
     # ------------------------------------------------------------------
     # Configure MQTT Integration in HA
