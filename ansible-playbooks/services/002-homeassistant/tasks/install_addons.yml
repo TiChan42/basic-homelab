@@ -172,7 +172,7 @@
 # ------------------------------------------------------------------
 - name: Get pending discovery flows
   uri:
-    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/config/config_entries/flow"
+    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/config/config_entries/flow/progress"
     method: GET
     headers:
       Authorization: "Bearer {{ ha_tokens[item] }}"
