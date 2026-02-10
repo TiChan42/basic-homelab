@@ -1,0 +1,18 @@
+---
+# tasks/install_mosquitto.yml – Mosquitto + Tools installieren
+#
+# Läuft im Container (hosts: mqtt_brokers).
+
+- name: Install Mosquitto and utilities
+  apt:
+    name:
+      - mosquitto
+      - mosquitto-clients
+      - nfs-common
+    state: present
+    update_cache: yes
+
+- name: Stop Mosquitto before initial configuration
+  systemd:
+    name: mosquitto
+    state: stopped

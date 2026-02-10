@@ -4,35 +4,26 @@
 # Description: Provisions a Proxmox LXC container and deploys an Eclipse
 #              Mosquitto MQTT broker with automated NAS backup/restore.
 #
-# Process:
-# 1. Proxmox Container Provisioning (localhost):
-#    - Downloads OS template if missing.
-#    - Creates/Configures the LXC container via Proxmox API.
-#    - Sets up port forwarding on the host for MQTT (1883) and WebSockets (9001).
-#
-# 2. MQTT Broker Deployment (Container):
-#    - Configures static networking via Netplan.
-#    - Installs Mosquitto and tools.
-#    - Restores backup from NAS if available (first boot / data missing).
-#    - Configures Mosquitto (listener, persistence, auth).
-#    - Sets up automated backup to NAS via cron.
-#    - Sets up restore-on-boot via systemd.
-#
-# Backup Concept:
-#   - A cron job runs every N hours (configurable).
-#   - It stops Mosquitto briefly, creates a validated tar.gz archive
-#     (config + persistence data + passwd) to a temp file, then restarts.
-#   - Validation: non-empty, minimum size, valid tar.gz – only then
-#     the previous backup is rotated and the new one promoted:
-#       mqtt_backup_latest.tar.gz  →  mqtt_backup_previous.tar.gz
-#       (new archive)              →  mqtt_backup_latest.tar.gz
-#   - On container boot a systemd oneshot service checks if local data
-#     is missing or empty and restores from the NAS backup automatically
-#     (falls back to previous if latest is invalid).
+# Structure:
+#   main.yml                          ← Orchestrator (this file)
+#   tasks/
+#     provision_container.yml         ← LXC erstellen, starten, DNS, Port-Forwarding
+#     configure_networking.yml        ← Statische IP via Netplan
+#     install_mosquitto.yml           ← Mosquitto + Tools installieren
+#     restore_backup.yml              ← NAS-Backup prüfen & wiederherstellen
+#     configure_mosquitto.yml         ← Verzeichnisse, Config, Authentifizierung
+#     setup_backup.yml                ← Backup/Restore-Scripts, Cron, Systemd
+#     verify_service.yml              ← Mosquitto starten, Port prüfen, Status
+#   templates/
+#     mosquitto.conf.j2               ← Mosquitto-Konfiguration
+#     netplan.yaml.j2                 ← Statische Netzwerk-Konfiguration
+#     mqtt_backup.sh.j2               ← Backup-Script
+#     mqtt_restore.sh.j2              ← Restore-Script
+#     mqtt-restore.service.j2         ← Systemd restore-on-boot
 #
 # Inventory Requirements (per host in 'mqtt_brokers' group):
-#   - mqtt_container_id            (unique Proxmox VMID)
-#   - ansible_host                 (static IP for the container)
+#   - mqtt_container_id               (unique Proxmox VMID)
+#   - ansible_host                    (static IP for the container)
 # ==============================================================================
 
 # ============================================================
@@ -47,115 +38,8 @@
     - "../../inventory/group_vars/all.yml"
 
   tasks:
-    # ------------------------------------------------------------------
-    # Prerequisites
-    # ------------------------------------------------------------------
-    - name: Ensure Proxmox API library is installed
-      apt:
-        name: python3-proxmoxer
-        state: present
-        update_cache: yes
-
-    - name: Get list of available OS templates
-      command: "pveam list local"
-      register: pveam_list
-      changed_when: false
-
-    - name: Download OS template if missing
-      command: "pveam download local {{ default_lxc_template.split('/')[-1] }}"
-      when: default_lxc_template.split('/')[-1] not in pveam_list.stdout
-
-    # ------------------------------------------------------------------
-    # Container creation
-    # ------------------------------------------------------------------
-    - name: Create MQTT LXC container
-      community.proxmox.proxmox:
-        api_host: "{{ proxmox_api_host }}"
-        api_user: "{{ proxmox_api_user }}"
-        api_token_id: "{{ proxmox_api_token_id }}"
-        api_token_secret: "{{ proxmox_api_token_secret }}"
-        node: "{{ proxmox_node }}"
-        vmid: "{{ hostvars[item]['mqtt_container_id'] }}"
-        hostname: "{{ item }}"
-        ostemplate: "{{ default_lxc_template }}"
-        cores: "{{ mqtt_container_cores }}"
-        memory: "{{ mqtt_container_memory }}"
-        swap: 512
-        disk: "{{ mqtt_container_rootfs }}"
-        netif:
-          net0: "name=eth0,bridge=vmbr0,ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
-        pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
-        onboot: yes
-        state: present
-      loop: "{{ groups['mqtt_brokers'] }}"
-      loop_control:
-        label: "{{ item }} (VMID {{ hostvars[item]['mqtt_container_id'] }})"
-
-    - name: Ensure MQTT container is running
-      community.proxmox.proxmox:
-        api_host: "{{ proxmox_api_host }}"
-        api_user: "{{ proxmox_api_user }}"
-        api_token_id: "{{ proxmox_api_token_id }}"
-        api_token_secret: "{{ proxmox_api_token_secret }}"
-        node: "{{ proxmox_node }}"
-        hostname: "{{ item }}"
-        vmid: "{{ hostvars[item]['mqtt_container_id'] }}"
-        state: started
-      loop: "{{ groups['mqtt_brokers'] }}"
-      loop_control:
-        label: "{{ item }}"
-
-    - name: Wait for SSH to become available
-      wait_for:
-        host: "{{ hostvars[item]['ansible_host'] }}"
-        port: 22
-        timeout: 60
-        search_regex: OpenSSH
-        delay: 5
-      loop: "{{ groups['mqtt_brokers'] }}"
-      loop_control:
-        label: "{{ item }}"
-
-    # ------------------------------------------------------------------
-    # Host networking
-    # ------------------------------------------------------------------
-    - name: Add MQTT container DNS entry to /etc/hosts
-      lineinfile:
-        path: /etc/hosts
-        line: "{{ hostvars[item]['ansible_host'] }} {{ item }}"
-        state: present
-        mode: '0644'
-      loop: "{{ groups['mqtt_brokers'] }}"
-      loop_control:
-        label: "{{ item }}"
-
-    - name: Forward MQTT port ({{ mqtt_port }}) to container
-      ansible.builtin.iptables:
-        table: nat
-        chain: PREROUTING
-        protocol: tcp
-        destination_port: "{{ mqtt_port }}"
-        jump: DNAT
-        to_destination: "{{ hostvars[item]['ansible_host'] }}:{{ mqtt_port }}"
-        comment: "Forward MQTT {{ mqtt_port }} -> {{ item }}"
-      loop: "{{ groups['mqtt_brokers'] }}"
-      loop_control:
-        label: "{{ item }} (:{{ mqtt_port }})"
-
-    - name: Forward MQTT WebSocket port ({{ mqtt_ws_port }}) to container
-      ansible.builtin.iptables:
-        table: nat
-        chain: PREROUTING
-        protocol: tcp
-        destination_port: "{{ mqtt_ws_port }}"
-        jump: DNAT
-        to_destination: "{{ hostvars[item]['ansible_host'] }}:{{ mqtt_ws_port }}"
-        comment: "Forward MQTT WS {{ mqtt_ws_port }} -> {{ item }}"
-      loop: "{{ groups['mqtt_brokers'] }}"
-      loop_control:
-        label: "{{ item }} (:{{ mqtt_ws_port }})"
-      when: mqtt_ws_enabled | default(false) | bool
-
+    - name: Provision & configure MQTT container
+      include_tasks: tasks/provision_container.yml
 
 # ============================================================
 # PLAY 2 – Deploy & configure Mosquitto inside the container
@@ -169,224 +53,23 @@
     - "../../inventory/group_vars/all.yml"
 
   tasks:
-    # ------------------------------------------------------------------
-    # Static networking
-    # ------------------------------------------------------------------
-    - name: Configure static networking (Netplan)
-      template:
-        src: templates/netplan.yaml.j2
-        dest: /etc/netplan/99-ansible-static.yaml
-        mode: '0600'
-      register: netplan_config
+    - name: Configure static networking
+      include_tasks: tasks/configure_networking.yml
 
-    - name: Remove conflicting default Netplan configs
-      file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/netplan/50-cloud-init.yaml
-        - /etc/netplan/00-installer-config.yaml
-      register: netplan_cleanup
+    - name: Install Mosquitto packages
+      include_tasks: tasks/install_mosquitto.yml
 
-    - name: Apply network changes
-      command: netplan apply
-      when: netplan_config.changed or netplan_cleanup.changed
+    - name: Restore backup from NAS (if needed)
+      include_tasks: tasks/restore_backup.yml
 
-    # ------------------------------------------------------------------
-    # Install Mosquitto
-    # ------------------------------------------------------------------
-    - name: Install Mosquitto and utilities
-      apt:
-        name:
-          - mosquitto
-          - mosquitto-clients
-          - nfs-common
-        state: present
-        update_cache: yes
+    - name: Configure Mosquitto (dirs, config, auth)
+      include_tasks: tasks/configure_mosquitto.yml
 
-    - name: Stop Mosquitto before initial configuration
-      systemd:
-        name: mosquitto
-        state: stopped
+    - name: Setup backup & restore infrastructure
+      include_tasks: tasks/setup_backup.yml
 
-    # ------------------------------------------------------------------
-    # Ensure backup directory on NAS exists
-    # ------------------------------------------------------------------
-    - name: Ensure MQTT backup directory on NAS exists
-      file:
-        path: "{{ nas_backup_mount }}/mqtt-broker"
-        state: directory
-        owner: mosquitto
-        group: mosquitto
-        mode: '0750'
-
-    # ------------------------------------------------------------------
-    # Restore backup if local data is missing
-    # ------------------------------------------------------------------
-    - name: Check if local Mosquitto data directory exists and has content
-      find:
-        paths: "{{ mqtt_data_dir }}"
-        file_type: any
-      register: local_data_check
-      ignore_errors: yes
-
-    - name: Find available NAS backup archives (numbered, 0 = newest)
-      stat:
-        path: "{{ nas_backup_mount }}/mqtt-broker/mqtt_backup.{{ item }}.tar.gz"
-      register: nas_backup_candidates
-      loop: "{{ range(0, mqtt_backup_keep_count) | list }}"
-      when: (local_data_check.matched | default(0)) == 0
-
-    - name: Set best available backup to restore from
-      set_fact:
-        mqtt_restore_archive: "{{ (nas_backup_candidates.results | default([]) | selectattr('stat.exists', 'defined') | selectattr('stat.exists') | first).stat.path | default('') }}"
-      when: (local_data_check.matched | default(0)) == 0
-
-    - name: Restore Mosquitto data from NAS backup archive
-      unarchive:
-        src: "{{ mqtt_restore_archive }}"
-        dest: /
-        remote_src: yes
-      when:
-        - (local_data_check.matched | default(0)) == 0
-        - mqtt_restore_archive | default('') | length > 0
-
-    - name: Fix ownership after restore
-      file:
-        path: "{{ item }}"
-        owner: mosquitto
-        group: mosquitto
-        recurse: "{{ item == mqtt_data_dir }}"
-      loop:
-        - "{{ mqtt_data_dir }}"
-        - "/etc/mosquitto/mosquitto.conf"
-      when:
-        - (local_data_check.matched | default(0)) == 0
-        - mqtt_restore_archive | default('') | length > 0
-      ignore_errors: yes
-
-    # ------------------------------------------------------------------
-    # Mosquitto configuration
-    # ------------------------------------------------------------------
-    - name: Ensure Mosquitto data directory exists
-      file:
-        path: "{{ mqtt_data_dir }}"
-        state: directory
-        owner: mosquitto
-        group: mosquitto
-        mode: '0750'
-
-    - name: Ensure Mosquitto log directory exists
-      file:
-        path: "{{ mqtt_log_dir }}"
-        state: directory
-        owner: mosquitto
-        group: mosquitto
-        mode: '0750'
-
-    - name: Deploy Mosquitto configuration
-      template:
-        src: templates/mosquitto.conf.j2
-        dest: /etc/mosquitto/mosquitto.conf
-        owner: mosquitto
-        group: mosquitto
-        mode: '0640'
-      notify: Restart Mosquitto
-
-    # ------------------------------------------------------------------
-    # Authentication setup (initial only – backup restore takes priority)
-    # ------------------------------------------------------------------
-    - name: Check if password file already exists
-      stat:
-        path: "{{ mqtt_password_file }}"
-      register: passwd_file
-
-    - name: Create initial MQTT user
-      shell: |
-        mosquitto_passwd -b -c {{ mqtt_password_file }} {{ mqtt_default_user | quote }} {{ mqtt_default_password | quote }}
-      when:
-        - mqtt_auth_enabled | default(true) | bool
-        - not passwd_file.stat.exists
-      no_log: true
-
-    - name: Set password file permissions
-      file:
-        path: "{{ mqtt_password_file }}"
-        owner: mosquitto
-        group: mosquitto
-        mode: '0600'
-      when: mqtt_auth_enabled | default(true) | bool
-
-    # ------------------------------------------------------------------
-    # Backup & restore scripts
-    # ------------------------------------------------------------------
-    - name: Deploy MQTT backup script
-      template:
-        src: templates/mqtt_backup.sh.j2
-        dest: "{{ mqtt_backup_script_path }}"
-        mode: '0750'
-        owner: root
-        group: root
-
-    - name: Deploy restore-on-boot script
-      template:
-        src: templates/mqtt_restore.sh.j2
-        dest: "{{ mqtt_restore_script_path }}"
-        mode: '0750'
-        owner: root
-        group: root
-
-    - name: Create systemd service for restore-on-boot
-      template:
-        src: templates/mqtt-restore.service.j2
-        dest: /etc/systemd/system/mqtt-restore.service
-        mode: '0644'
-      notify: Reload systemd
-
-    # ------------------------------------------------------------------
-    # Cron – periodic backup
-    # ------------------------------------------------------------------
-    - name: Set up periodic MQTT backup via cron
-      cron:
-        name: "MQTT Broker backup to NAS"
-        minute: "{{ mqtt_backup_cron_minute }}"
-        hour: "{{ mqtt_backup_cron_hour }}"
-        job: "{{ mqtt_backup_script_path }} 2>&1 | logger -t mqtt-backup-cron"
-        user: root
-        state: present
-
-    # ------------------------------------------------------------------
-    # Enable & start services
-    # ------------------------------------------------------------------
-    - name: Enable restore-on-boot service
-      systemd:
-        name: mqtt-restore
-        enabled: yes
-        daemon_reload: yes
-
-    - name: Start and enable Mosquitto
-      systemd:
-        name: mosquitto
-        enabled: yes
-        state: started
-        daemon_reload: yes
-
-    # ------------------------------------------------------------------
-    # Verification
-    # ------------------------------------------------------------------
-    - name: Verify Mosquitto is listening
-      wait_for:
-        port: "{{ mqtt_port }}"
-        timeout: 15
-
-    - name: Show Mosquitto status
-      command: systemctl status mosquitto --no-pager -l
-      register: mqtt_status
-      changed_when: false
-
-    - name: Print Mosquitto status
-      debug:
-        msg: "{{ mqtt_status.stdout_lines }}"
+    - name: Start & verify Mosquitto service
+      include_tasks: tasks/verify_service.yml
 
   handlers:
     - name: Restart Mosquitto

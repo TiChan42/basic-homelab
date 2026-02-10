@@ -1,0 +1,59 @@
+---
+# tasks/configure_mosquitto.yml – Verzeichnisse, Config-Template & Authentifizierung
+#
+# Läuft im Container (hosts: mqtt_brokers).
+
+# ------------------------------------------------------------------
+# Verzeichnisse
+# ------------------------------------------------------------------
+- name: Ensure Mosquitto data directory exists
+  file:
+    path: "{{ mqtt_data_dir }}"
+    state: directory
+    owner: mosquitto
+    group: mosquitto
+    mode: '0750'
+
+- name: Ensure Mosquitto log directory exists
+  file:
+    path: "{{ mqtt_log_dir }}"
+    state: directory
+    owner: mosquitto
+    group: mosquitto
+    mode: '0750'
+
+# ------------------------------------------------------------------
+# Konfiguration
+# ------------------------------------------------------------------
+- name: Deploy Mosquitto configuration
+  template:
+    src: templates/mosquitto.conf.j2
+    dest: /etc/mosquitto/mosquitto.conf
+    owner: mosquitto
+    group: mosquitto
+    mode: '0640'
+  notify: Restart Mosquitto
+
+# ------------------------------------------------------------------
+# Authentifizierung (nur beim Erstsetup – Backup-Restore hat Vorrang)
+# ------------------------------------------------------------------
+- name: Check if password file already exists
+  stat:
+    path: "{{ mqtt_password_file }}"
+  register: passwd_file
+
+- name: Create initial MQTT user
+  shell: |
+    mosquitto_passwd -b -c {{ mqtt_password_file }} {{ mqtt_default_user | quote }} {{ mqtt_default_password | quote }}
+  when:
+    - mqtt_auth_enabled | default(true) | bool
+    - not passwd_file.stat.exists
+  no_log: true
+
+- name: Set password file permissions
+  file:
+    path: "{{ mqtt_password_file }}"
+    owner: mosquitto
+    group: mosquitto
+    mode: '0600'
+  when: mqtt_auth_enabled | default(true) | bool

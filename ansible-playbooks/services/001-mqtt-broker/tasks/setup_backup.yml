@@ -1,0 +1,51 @@
+---
+# tasks/setup_backup.yml – Backup/Restore-Scripts, Cron-Job & Systemd-Service
+#
+# Läuft im Container (hosts: mqtt_brokers).
+
+# ------------------------------------------------------------------
+# Scripts deployen
+# ------------------------------------------------------------------
+- name: Deploy MQTT backup script
+  template:
+    src: templates/mqtt_backup.sh.j2
+    dest: "{{ mqtt_backup_script_path }}"
+    mode: '0750'
+    owner: root
+    group: root
+
+- name: Deploy restore-on-boot script
+  template:
+    src: templates/mqtt_restore.sh.j2
+    dest: "{{ mqtt_restore_script_path }}"
+    mode: '0750'
+    owner: root
+    group: root
+
+# ------------------------------------------------------------------
+# Systemd restore-on-boot Service
+# ------------------------------------------------------------------
+- name: Create systemd service for restore-on-boot
+  template:
+    src: templates/mqtt-restore.service.j2
+    dest: /etc/systemd/system/mqtt-restore.service
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Enable restore-on-boot service
+  systemd:
+    name: mqtt-restore
+    enabled: yes
+    daemon_reload: yes
+
+# ------------------------------------------------------------------
+# Cron – periodisches Backup
+# ------------------------------------------------------------------
+- name: Set up periodic MQTT backup via cron
+  cron:
+    name: "MQTT Broker backup to NAS"
+    minute: "{{ mqtt_backup_cron_minute }}"
+    hour: "{{ mqtt_backup_cron_hour }}"
+    job: "{{ mqtt_backup_script_path }} 2>&1 | logger -t mqtt-backup-cron"
+    user: root
+    state: present

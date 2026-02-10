@@ -1,0 +1,108 @@
+---
+# ==============================================================================
+# Tasks: Provision HAOS VM on Proxmox
+# ==============================================================================
+# Downloads the HAOS image, creates a UEFI KVM VM, imports the disk,
+# and starts the VM. All steps are idempotent – existing VMs are skipped.
+# ==============================================================================
+
+# ------------------------------------------------------------------
+# Download HAOS image (only if missing)
+# ------------------------------------------------------------------
+- name: Ensure download directory exists
+  file:
+    path: "{{ ha_image_download_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Check if HAOS image already exists
+  stat:
+    path: "{{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2"
+  register: haos_image
+
+- name: Download HAOS qcow2 image (compressed)
+  get_url:
+    url: "{{ ha_image_url }}"
+    dest: "{{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2.xz"
+    mode: '0644'
+  when: not haos_image.stat.exists
+
+- name: Decompress HAOS image
+  command: "xz -d -k {{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2.xz"
+  args:
+    creates: "{{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2"
+  when: not haos_image.stat.exists
+
+# ------------------------------------------------------------------
+# VM creation (idempotent – skips if VM already exists)
+# ------------------------------------------------------------------
+- name: Check if VM already exists
+  command: "qm status {{ hostvars[item]['ha_vm_id'] }}"
+  register: vm_exists
+  failed_when: false
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+
+- name: Create HAOS VM
+  command: >
+    qm create {{ hostvars[item.item]['ha_vm_id'] }}
+    --name {{ hostvars[item.item]['ha_vm_name'] }}
+    --memory {{ ha_vm_memory }}
+    --cores {{ ha_vm_cores }}
+    --cpu {{ ha_vm_cpu_type }}
+    --bios ovmf
+    --machine q35
+    --ostype l26
+    --agent 1
+    --net0 virtio,bridge={{ ha_vm_bridge }}{{ ',macaddr=' + ha_vm_mac if ha_vm_mac | default('') | length > 0 else '' }}
+    --scsihw virtio-scsi-pci
+    --onboot 1
+    --efidisk0 {{ default_storage }}:1
+  loop: "{{ vm_exists.results }}"
+  when: item.rc != 0
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Import HAOS disk image into VM
+  command: >-
+    qm importdisk {{ hostvars[item.item]['ha_vm_id'] }}
+    {{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2 {{ default_storage }}
+  loop: "{{ vm_exists.results }}"
+  when: item.rc != 0
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Attach imported disk as scsi0
+  command: >-
+    qm set {{ hostvars[item.item]['ha_vm_id'] }}
+    --scsi0 {{ default_storage }}:vm-{{ hostvars[item.item]['ha_vm_id'] }}-disk-1
+  loop: "{{ vm_exists.results }}"
+  when: item.rc != 0
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Resize disk to desired size
+  command: "qm resize {{ hostvars[item.item]['ha_vm_id'] }} scsi0 {{ ha_vm_disk_size }}"
+  loop: "{{ vm_exists.results }}"
+  when: item.rc != 0
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Set boot order to scsi0
+  command: "qm set {{ hostvars[item.item]['ha_vm_id'] }} --boot order=scsi0"
+  loop: "{{ vm_exists.results }}"
+  when: item.rc != 0
+  loop_control:
+    label: "{{ item.item }}"
+
+# ------------------------------------------------------------------
+# Start VM (idempotent – tolerates "already running")
+# ------------------------------------------------------------------
+- name: Start Home Assistant VM
+  command: "qm start {{ hostvars[item]['ha_vm_id'] }}"
+  register: vm_start
+  failed_when:
+    - vm_start.rc != 0
+    - "'already running' not in vm_start.stderr"
+  changed_when: vm_start.rc == 0
+  loop: "{{ groups['homeassistant'] }}"

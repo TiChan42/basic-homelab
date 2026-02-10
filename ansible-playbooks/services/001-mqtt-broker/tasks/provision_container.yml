@@ -1,0 +1,118 @@
+---
+# tasks/provision_container.yml – LXC Container auf Proxmox erstellen & starten
+#
+# Benötigte Variablen (aus group_vars/all.yml):
+#   proxmox_api_host, proxmox_api_user, proxmox_api_token_id/secret
+#   proxmox_node, default_lxc_template, default_storage
+#   mqtt_container_cores, mqtt_container_memory, mqtt_container_rootfs
+#   mqtt_port, mqtt_ws_port, mqtt_ws_enabled
+#   network_cidr, network_gateway
+
+# ------------------------------------------------------------------
+# Prerequisites
+# ------------------------------------------------------------------
+- name: Ensure Proxmox API library is installed
+  apt:
+    name: python3-proxmoxer
+    state: present
+    update_cache: yes
+
+- name: Get list of available OS templates
+  command: "pveam list local"
+  register: pveam_list
+  changed_when: false
+
+- name: Download OS template if missing
+  command: "pveam download local {{ default_lxc_template.split('/')[-1] }}"
+  when: default_lxc_template.split('/')[-1] not in pveam_list.stdout
+
+# ------------------------------------------------------------------
+# Container creation
+# ------------------------------------------------------------------
+- name: Create MQTT LXC container
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_token_id: "{{ proxmox_api_token_id }}"
+    api_token_secret: "{{ proxmox_api_token_secret }}"
+    node: "{{ proxmox_node }}"
+    vmid: "{{ hostvars[item]['mqtt_container_id'] }}"
+    hostname: "{{ item }}"
+    ostemplate: "{{ default_lxc_template }}"
+    cores: "{{ mqtt_container_cores }}"
+    memory: "{{ mqtt_container_memory }}"
+    swap: 512
+    disk: "{{ mqtt_container_rootfs }}"
+    netif:
+      net0: "name=eth0,bridge=vmbr0,ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
+    pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
+    onboot: yes
+    state: present
+  loop: "{{ groups['mqtt_brokers'] }}"
+  loop_control:
+    label: "{{ item }} (VMID {{ hostvars[item]['mqtt_container_id'] }})"
+
+- name: Ensure MQTT container is running
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_token_id: "{{ proxmox_api_token_id }}"
+    api_token_secret: "{{ proxmox_api_token_secret }}"
+    node: "{{ proxmox_node }}"
+    hostname: "{{ item }}"
+    vmid: "{{ hostvars[item]['mqtt_container_id'] }}"
+    state: started
+  loop: "{{ groups['mqtt_brokers'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Wait for SSH to become available
+  wait_for:
+    host: "{{ hostvars[item]['ansible_host'] }}"
+    port: 22
+    timeout: 60
+    search_regex: OpenSSH
+    delay: 5
+  loop: "{{ groups['mqtt_brokers'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+# ------------------------------------------------------------------
+# Host networking (DNS + Port-Forwarding)
+# ------------------------------------------------------------------
+- name: Add MQTT container DNS entry to /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    line: "{{ hostvars[item]['ansible_host'] }} {{ item }}"
+    state: present
+    mode: '0644'
+  loop: "{{ groups['mqtt_brokers'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Forward MQTT port ({{ mqtt_port }}) to container
+  ansible.builtin.iptables:
+    table: nat
+    chain: PREROUTING
+    protocol: tcp
+    destination_port: "{{ mqtt_port }}"
+    jump: DNAT
+    to_destination: "{{ hostvars[item]['ansible_host'] }}:{{ mqtt_port }}"
+    comment: "Forward MQTT {{ mqtt_port }} -> {{ item }}"
+  loop: "{{ groups['mqtt_brokers'] }}"
+  loop_control:
+    label: "{{ item }} (:{{ mqtt_port }})"
+
+- name: Forward MQTT WebSocket port ({{ mqtt_ws_port }}) to container
+  ansible.builtin.iptables:
+    table: nat
+    chain: PREROUTING
+    protocol: tcp
+    destination_port: "{{ mqtt_ws_port }}"
+    jump: DNAT
+    to_destination: "{{ hostvars[item]['ansible_host'] }}:{{ mqtt_ws_port }}"
+    comment: "Forward MQTT WS {{ mqtt_ws_port }} -> {{ item }}"
+  loop: "{{ groups['mqtt_brokers'] }}"
+  loop_control:
+    label: "{{ item }} (:{{ mqtt_ws_port }})"
+  when: mqtt_ws_enabled | default(false) | bool

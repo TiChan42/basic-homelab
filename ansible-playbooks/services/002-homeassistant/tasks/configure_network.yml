@@ -1,0 +1,136 @@
+---
+# ==============================================================================
+# Tasks: Configure static IP via Supervisor Network API
+# ==============================================================================
+# Sets the static IP address on the HA VM's default network interface.
+# Skips if the current IP already matches the target static IP.
+# Re-authenticates afterwards since the IP change may invalidate tokens.
+# ==============================================================================
+
+- name: Deploy Supervisor API WebSocket helper script
+  copy:
+    src: files/ha_supervisor_api.py
+    dest: /usr/local/bin/ha_supervisor_api.py
+    mode: '0755'
+
+# ------------------------------------------------------------------
+# Check if IP change is actually needed
+# ------------------------------------------------------------------
+- name: Determine if static IP configuration is needed
+  set_fact:
+    ha_ip_change_needed: "{{ ha_initial_ips[item] != hostvars[item]['ansible_host'] }}"
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+# ------------------------------------------------------------------
+# Apply static IP (only when current IP differs from target)
+# ------------------------------------------------------------------
+- name: Configure static IP address
+  shell: >-
+    echo {{ _ip_body | quote }} |
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ ha_initial_ips[item] }}:8123"
+    "{{ ha_tokens[item] }}"
+    POST
+    /network/interface/default/update
+    -
+  vars:
+    _ip_body: >-
+      {{ {"ipv4": {"method": "static",
+          "address": [hostvars[item]["ansible_host"] + network_cidr],
+          "gateway": network_gateway,
+          "nameservers": [network_dns | default(network_gateway)]}} | to_json }}
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - ha_ip_change_needed | default(false) | bool
+  no_log: true
+
+- name: Wait for HA to become available on static IP
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/"
+    method: GET
+    status_code: [200, 401]
+    timeout: 10
+  register: ha_static_check
+  retries: 30
+  delay: 10
+  until: ha_static_check.status in [200, 401]
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+# ------------------------------------------------------------------
+# Re-authenticate on (possibly new) static IP
+# ------------------------------------------------------------------
+- name: Re-authenticate – initiate login flow
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/auth/login_flow"
+    method: POST
+    body_format: json
+    body:
+      client_id: "http://{{ hostvars[item]['ansible_host'] }}:8123/"
+      handler: ["homeassistant", null]
+      redirect_uri: "http://{{ hostvars[item]['ansible_host'] }}:8123/"
+    status_code: [200]
+    timeout: 30
+  register: reauth_login_flow
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Re-authenticate – submit credentials
+  uri:
+    url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/auth/login_flow/{{ item.json.flow_id }}"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ ha_admin_user }}"
+      password: "{{ ha_admin_password }}"
+      client_id: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/"
+    status_code: [200]
+    timeout: 30
+  register: reauth_login_result
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+  loop: "{{ reauth_login_flow.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Re-authenticate – exchange auth code for tokens
+  uri:
+    url: "http://{{ hostvars[_host]['ansible_host'] }}:8123/auth/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: authorization_code
+      code: "{{ item.json.result }}"
+      client_id: "http://{{ hostvars[_host]['ansible_host'] }}:8123/"
+    status_code: [200]
+    timeout: 30
+  vars:
+    _host: "{{ item.item.item }}"
+  register: reauth_response
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+  loop: "{{ reauth_login_result.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+
+- name: Update access tokens after re-authentication
+  set_fact:
+    ha_tokens: "{{ ha_tokens | combine({ _host: item.json.access_token }) }}"
+  vars:
+    _host: "{{ item.item.item.item }}"
+  loop: "{{ reauth_response.results }}"
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+
+- name: Update initial IPs to static IP
+  set_fact:
+    ha_initial_ips: "{{ ha_initial_ips | combine({item: hostvars[item]['ansible_host']}) }}"
+  loop: "{{ groups['homeassistant'] }}"

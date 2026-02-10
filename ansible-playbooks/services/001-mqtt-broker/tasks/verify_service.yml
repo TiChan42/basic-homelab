@@ -1,0 +1,25 @@
+---
+# tasks/verify_service.yml – Mosquitto starten, Port prüfen & Status anzeigen
+#
+# Läuft im Container (hosts: mqtt_brokers).
+
+- name: Start and enable Mosquitto
+  systemd:
+    name: mosquitto
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Verify Mosquitto is listening
+  wait_for:
+    port: "{{ mqtt_port }}"
+    timeout: 15
+
+- name: Show Mosquitto status
+  command: systemctl status mosquitto --no-pager -l
+  register: mqtt_status
+  changed_when: false
+
+- name: Print Mosquitto status
+  debug:
+    msg: "{{ mqtt_status.stdout_lines }}"

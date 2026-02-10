@@ -1,0 +1,59 @@
+---
+# tasks/restore_backup.yml – NAS-Backup prüfen & wiederherstellen (nur bei leerem Datenverzeichnis)
+#
+# Läuft im Container (hosts: mqtt_brokers).
+# Idempotent: Wird übersprungen, wenn lokale Daten bereits vorhanden sind.
+
+- name: Ensure MQTT backup directory on NAS exists
+  file:
+    path: "{{ nas_backup_mount }}/mqtt-broker"
+    state: directory
+    owner: mosquitto
+    group: mosquitto
+    mode: '0750'
+
+- name: Check if local Mosquitto data directory exists and has content
+  find:
+    paths: "{{ mqtt_data_dir }}"
+    file_type: any
+  register: local_data_check
+  ignore_errors: true
+
+- name: Find available NAS backup archives (numbered, 0 = newest)
+  stat:
+    path: "{{ nas_backup_mount }}/mqtt-broker/mqtt_backup.{{ item }}.tar.gz"
+  register: nas_backup_candidates
+  loop: "{{ range(0, mqtt_backup_keep_count) | list }}"
+  when: (local_data_check.matched | default(0)) == 0
+
+- name: Set best available backup to restore from
+  set_fact:
+    mqtt_restore_archive: >-
+      {{ (nas_backup_candidates.results | default([])
+          | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists')
+          | first).stat.path | default('') }}
+  when: (local_data_check.matched | default(0)) == 0
+
+- name: Restore Mosquitto data from NAS backup archive
+  unarchive:
+    src: "{{ mqtt_restore_archive }}"
+    dest: /
+    remote_src: yes
+  when:
+    - (local_data_check.matched | default(0)) == 0
+    - mqtt_restore_archive | default('') | length > 0
+
+- name: Fix ownership after restore
+  file:
+    path: "{{ item }}"
+    owner: mosquitto
+    group: mosquitto
+    recurse: "{{ item == mqtt_data_dir }}"
+  loop:
+    - "{{ mqtt_data_dir }}"
+    - "/etc/mosquitto/mosquitto.conf"
+  when:
+    - (local_data_check.matched | default(0)) == 0
+    - mqtt_restore_archive | default('') | length > 0
+  ignore_errors: true

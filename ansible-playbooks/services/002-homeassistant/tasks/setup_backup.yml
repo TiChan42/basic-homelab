@@ -1,0 +1,27 @@
+---
+# ==============================================================================
+# Tasks: Setup Home Assistant backup to NAS
+# ==============================================================================
+
+- name: Ensure HA backup directory on NAS exists
+  file:
+    path: "{{ nas_backup_mount }}/homeassistant"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Deploy HA backup script
+  template:
+    src: templates/ha_backup.sh.j2
+    dest: "{{ ha_backup_script_path }}"
+    mode: '0750'
+
+- name: Set up periodic HA backup via cron
+  cron:
+    name: "Home Assistant backup to NAS"
+    minute: "{{ ha_backup_cron_minute }}"
+    hour: "{{ ha_backup_cron_hour }}"
+    job: "{{ ha_backup_script_path }} 2>&1 | logger -t ha-backup-cron"
+    user: root
+    state: present
