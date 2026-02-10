@@ -166,3 +166,59 @@
   when: >-
     (z2m_install.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length > 0)
     or (matter_install.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length > 0)
+
+# ------------------------------------------------------------------
+# Dismiss ZHA discovery (Zigbee2MQTT handles the dongle exclusively)
+# ------------------------------------------------------------------
+- name: Get pending discovery flows
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/config/config_entries/flow"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    status_code: [200]
+    timeout: 10
+  register: pending_flows
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Identify ZHA discovery flows to dismiss
+  set_fact:
+    zha_discovery_flows: >-
+      {{ pending_flows.results | default([])
+         | selectattr('json', 'defined')
+         | map(attribute='json') | flatten
+         | selectattr('handler', 'equalto', 'zha')
+         | list }}
+
+- name: Dismiss ZHA discovery flows (Zigbee2MQTT is used instead)
+  uri:
+    url: "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:8123/api/config/config_entries/flow/{{ item.flow_id }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ ha_tokens[groups['homeassistant'][0]] }}"
+    status_code: [200]
+    timeout: 10
+  loop: "{{ zha_discovery_flows }}"
+  loop_control:
+    label: "ZHA flow {{ item.flow_id }}"
+  when: zha_discovery_flows | length > 0
+
+- name: Ignore ZHA integration for future discoveries
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/config/config_entries/ignore_flow"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    body_format: json
+    body:
+      handler: zha
+      title: "Ignored – Zigbee2MQTT is used"
+    status_code: [200]
+    timeout: 10
+  register: zha_ignore_result
+  failed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - zha_discovery_flows | length > 0
