@@ -101,23 +101,24 @@
 
 - name: Parse HAOS version info
   set_fact:
-    haos_update_available: >-
-      {{ (haos_info.results | default([])
-          | selectattr('stdout', 'defined')
-          | map(attribute='stdout')
-          | map('from_json')
-          | selectattr('data.update_available', 'defined')
-          | selectattr('data.update_available', 'equalto', true)
-          | list | length) > 0 }}
+    _haos_data: >-
+      {{ haos_info.results | default([])
+         | selectattr('stdout', 'defined')
+         | map(attribute='stdout')
+         | map('from_json')
+         | first | default({}) }}
+
+- name: Determine if HAOS update is available
+  set_fact:
+    haos_update_available: "{{ (_haos_data.data | default({})).get('update_available', false) | bool }}"
+    haos_current_version: "{{ (_haos_data.data | default({})).get('version', '?') }}"
+    haos_latest_version: "{{ (_haos_data.data | default({})).get('latest_version', '?') }}"
 
 - name: Show HAOS update status
   debug:
     msg: >-
       HAOS Update {{ 'available' if haos_update_available | bool else 'not needed' }}
-      {% for r in haos_info.results | default([]) if r.stdout is defined %}
-      – Current: {{ (r.stdout | from_json).data.version | default('?') }},
-        Latest: {{ (r.stdout | from_json).data.latest_version | default('?') }}
-      {% endfor %}
+      – Current: {{ haos_current_version }}, Latest: {{ haos_latest_version }}
 
 - name: Apply HAOS update
   shell: >-
