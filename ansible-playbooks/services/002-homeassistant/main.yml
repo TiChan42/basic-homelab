@@ -87,6 +87,11 @@
     - "../../inventory/group_vars/all.yml"
 
   tasks:
+    # --- Initialize change tracking ---
+    - name: Initialize reboot tracking flag
+      set_fact:
+        ha_reboot_needed: false
+
     # --- Onboarding & authentication ---
     - name: Complete onboarding and authenticate
       include_tasks: tasks/onboarding.yml
@@ -103,24 +108,9 @@
     - name: Configure MQTT integration
       include_tasks: tasks/configure_mqtt.yml
 
-    # --- Health check ---
-    - name: Verify Home Assistant is healthy
-      uri:
-        url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/"
-        method: GET
-        headers:
-          Authorization: "Bearer {{ ha_tokens[item] }}"
-        status_code: [200]
-        timeout: 10
-      register: ha_final_check
-      loop: "{{ groups['homeassistant'] }}"
-      when: item in ha_tokens
-
-    - name: Print HA status
-      debug:
-        msg: "HA ({{ item.item }}) running at http://{{ hostvars[item.item]['ansible_host'] }}:8123 – {{ item.json.message }}"
-      loop: "{{ ha_final_check.results }}"
-      when: item.status is defined and item.status == 200
+    # --- Reboot & Health Check ---
+    - name: Reboot and verify Home Assistant
+      include_tasks: tasks/reboot_and_healthcheck.yml
 
 
 # ============================================================

@@ -134,3 +134,8 @@
   set_fact:
     ha_initial_ips: "{{ ha_initial_ips | combine({item: hostvars[item]['ansible_host']}) }}"
   loop: "{{ groups['homeassistant'] }}"
+
+- name: Flag reboot needed (IP changed)
+  set_fact:
+    ha_reboot_needed: true
+  when: ha_ip_change_needed | default(false) | bool

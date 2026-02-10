@@ -159,3 +159,10 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
   no_log: true
+
+- name: Flag reboot needed (add-ons changed)
+  set_fact:
+    ha_reboot_needed: true
+  when: >-
+    (z2m_install.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length > 0)
+    or (matter_install.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length > 0)

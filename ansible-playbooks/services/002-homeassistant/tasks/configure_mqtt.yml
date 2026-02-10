@@ -106,3 +106,8 @@
   loop: "{{ mqtt_broker_step.results | default([]) }}"
   loop_control:
     label: "{{ item.item.item | default('unknown') }}"
+
+- name: Flag reboot needed (MQTT configured)
+  set_fact:
+    ha_reboot_needed: true
+  when: not (ha_mqtt_configured | bool)

@@ -1,0 +1,71 @@
+---
+# tasks/reboot_and_healthcheck.yml – Reboot HA VM (if changed) and verify health
+#
+# Process:
+# 1. Reboot VM via Proxmox command (only if ha_reboot_needed is true)
+# 2. Wait for API to stop responding (ensure reboot actually happened)
+# 3. Wait for API to become available
+# 4. Always perform deep health check (Core state)
+
+- name: Skip reboot (no changes detected)
+  debug:
+    msg: "No configuration changes detected – skipping reboot."
+  when: not (ha_reboot_needed | default(false) | bool)
+
+- name: Reboot Home Assistant VM
+  command: "qm reboot {{ hostvars[item]['ha_vm_id'] }}"
+  changed_when: true
+  loop: "{{ groups['homeassistant'] }}"
+  when: ha_reboot_needed | default(false) | bool
+
+- name: Wait for Home Assistant API to stop responding (confirm shutdown)
+  wait_for:
+    host: "{{ hostvars[item]['ansible_host'] }}"
+    port: 8123
+    state: stopped
+    timeout: 90
+    delay: 5
+  loop: "{{ groups['homeassistant'] }}"
+  ignore_errors: true
+  when: ha_reboot_needed | default(false) | bool
+
+- name: Wait for Home Assistant API to become available (after reboot)
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/"
+    method: GET
+    status_code: [200, 401]
+    timeout: 10
+  register: ha_reboot_check
+  retries: 60
+  delay: 10
+  until: ha_reboot_check.status is defined and ha_reboot_check.status in [200, 401]
+  loop: "{{ groups['homeassistant'] }}"
+  when: ha_reboot_needed | default(false) | bool
+
+- name: Verify Home Assistant Core is running (Health Check)
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/config"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    status_code: [200]
+    timeout: 30
+  register: ha_health_check
+  retries: 30
+  delay: 10
+  until: 
+    - ha_health_check.status is defined
+    - ha_health_check.status == 200
+    - ha_health_check.json is defined
+    - ha_health_check.json.state is defined
+    - ha_health_check.json.state == "RUNNING"
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Print HA Health Status
+  debug:
+    msg: "Home Assistant ({{ item.item }}) is healthy! Version: {{ item.json.version }}, State: {{ item.json.state }}"
+  loop: "{{ ha_health_check.results }}"
+  when: 
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
