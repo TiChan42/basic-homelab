@@ -423,6 +423,79 @@
         - item.status is defined and item.status == 200
 
     # ------------------------------------------------------------------
+    # Complete remaining onboarding steps (required for Supervisor API)
+    # ------------------------------------------------------------------
+    - name: Check remaining onboarding steps
+      uri:
+        url: "http://{{ ha_initial_ips[item] }}:8123/api/onboarding"
+        method: GET
+        status_code: [200]
+        timeout: 10
+      register: remaining_onboarding
+      failed_when: false
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Complete core_config onboarding step
+      uri:
+        url: "http://{{ ha_initial_ips[item.item] }}:8123/api/onboarding/core_config"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item.item] }}"
+        body_format: json
+        body: {}
+        status_code: [200]
+        timeout: 30
+      when:
+        - item.status is defined and item.status == 200
+        - item.json is defined
+        - item.json | selectattr('step', 'equalto', 'core_config') | selectattr('done', 'equalto', false) | list | length > 0
+      failed_when: false
+      loop: "{{ remaining_onboarding.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Complete analytics onboarding step
+      uri:
+        url: "http://{{ ha_initial_ips[item.item] }}:8123/api/onboarding/analytics"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item.item] }}"
+        body_format: json
+        body: {}
+        status_code: [200]
+        timeout: 30
+      when:
+        - item.status is defined and item.status == 200
+        - item.json is defined
+        - item.json | selectattr('step', 'equalto', 'analytics') | selectattr('done', 'equalto', false) | list | length > 0
+      failed_when: false
+      loop: "{{ remaining_onboarding.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Complete integration onboarding step
+      uri:
+        url: "http://{{ ha_initial_ips[item.item] }}:8123/api/onboarding/integration"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item.item] }}"
+        body_format: json
+        body:
+          client_id: "http://{{ ha_initial_ips[item.item] }}:8123/"
+          redirect_uri: "http://{{ ha_initial_ips[item.item] }}:8123/"
+        status_code: [200]
+        timeout: 30
+      when:
+        - item.status is defined and item.status == 200
+        - item.json is defined
+        - item.json | selectattr('step', 'equalto', 'integration') | selectattr('done', 'equalto', false) | list | length > 0
+      failed_when: false
+      loop: "{{ remaining_onboarding.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ------------------------------------------------------------------
     # Configure static IP via Supervisor Network API
     # ------------------------------------------------------------------
     - name: Configure static IP address
