@@ -1,0 +1,112 @@
+---
+# ==============================================================================
+# Tasks: Configure HA Core settings & apply OS updates
+# ==============================================================================
+# 1. Sets country/region/timezone/currency via Core config API
+# 2. Checks for & applies HAOS updates via Supervisor API
+# ==============================================================================
+
+# ------------------------------------------------------------------
+# Core configuration (country, timezone, currency, unit system)
+# ------------------------------------------------------------------
+- name: Check current HA Core configuration
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/config"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    status_code: [200]
+    timeout: 10
+  register: ha_core_config
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Configure country, timezone and locale
+  uri:
+    url: "http://{{ hostvars[item.item]['ansible_host'] }}:8123/api/config/core/update"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item.item] }}"
+    body_format: json
+    body:
+      country: "{{ ha_country }}"
+      currency: "{{ ha_currency }}"
+      time_zone: "{{ ha_timezone }}"
+      unit_system: "{{ ha_unit_system }}"
+      language: "{{ ha_language }}"
+    status_code: [200]
+    timeout: 30
+  when:
+    - item.status is defined and item.status == 200
+    - item.json.country | default('') != ha_country
+  loop: "{{ ha_core_config.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# ------------------------------------------------------------------
+# HAOS Update (via Supervisor WebSocket API)
+# ------------------------------------------------------------------
+- name: Check for available HAOS update
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:8123"
+    "{{ ha_tokens[item] }}"
+    GET
+    /os/info
+  register: haos_info
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Parse HAOS version info
+  set_fact:
+    haos_update_available: >-
+      {{ (haos_info.results | default([])
+          | selectattr('stdout', 'defined')
+          | map(attribute='stdout')
+          | map('from_json')
+          | selectattr('data.update_available', 'defined')
+          | selectattr('data.update_available', 'equalto', true)
+          | list | length) > 0 }}
+
+- name: Show HAOS update status
+  debug:
+    msg: >-
+      HAOS Update {{ 'available' if haos_update_available | bool else 'not needed' }}
+      {% for r in haos_info.results | default([]) if r.stdout is defined %}
+      – Current: {{ (r.stdout | from_json).data.version | default('?') }},
+        Latest: {{ (r.stdout | from_json).data.latest_version | default('?') }}
+      {% endfor %}
+
+- name: Apply HAOS update
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:8123"
+    "{{ ha_tokens[item] }}"
+    POST
+    /os/update
+  register: haos_update
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - haos_update_available | bool
+  no_log: true
+
+- name: Flag reboot needed (HAOS updated)
+  set_fact:
+    ha_reboot_needed: true
+  when: haos_update_available | bool
+
+- name: Wait for HA to become available after OS update
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:8123/api/"
+    method: GET
+    status_code: [200, 401]
+    timeout: 10
+  register: ha_post_update_check
+  retries: 90
+  delay: 15
+  until: ha_post_update_check.status is defined and ha_post_update_check.status in [200, 401]
+  loop: "{{ groups['homeassistant'] }}"
+  when: haos_update_available | bool

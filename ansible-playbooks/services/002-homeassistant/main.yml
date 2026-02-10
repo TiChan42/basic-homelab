@@ -96,6 +96,10 @@
     - name: Complete onboarding and authenticate
       include_tasks: tasks/onboarding.yml
 
+    # --- Core config (country, timezone) & OS updates ---
+    - name: Configure core settings and apply updates
+      include_tasks: tasks/configure_core_and_updates.yml
+
     # --- Static IP configuration ---
     - name: Configure static IP address
       include_tasks: tasks/configure_network.yml
