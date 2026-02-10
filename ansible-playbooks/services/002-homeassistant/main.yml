@@ -56,7 +56,7 @@
       apt:
         name:
           - python3-proxmoxer
-          - python3-pip
+          - python3-websocket
           - wget
           - xz-utils
           - jq
@@ -505,11 +505,6 @@
     # ------------------------------------------------------------------
     # Deploy WebSocket helper for Supervisor API calls
     # ------------------------------------------------------------------
-    - name: Install Python websocket-client package
-      pip:
-        name: websocket-client
-        state: present
-
     - name: Deploy Supervisor API WebSocket helper script
       copy:
         src: files/ha_supervisor_api.py
