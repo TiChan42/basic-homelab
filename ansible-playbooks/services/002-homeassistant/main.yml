@@ -310,7 +310,7 @@
       when:
         - item.status == 200
         - item.json is defined
-        - item.json | length > 0
+        - item.json | selectattr('step', 'equalto', 'user') | selectattr('done', 'equalto', false) | list | length > 0
       no_log: true
       loop: "{{ onboarding_status.results }}"
       loop_control:
