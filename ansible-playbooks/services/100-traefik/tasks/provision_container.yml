@@ -104,7 +104,7 @@
       {% endfor %}
       {{ entries | to_json }}
 
-- name: Add *.home.lab DNS entries pointing to Traefik
+- name: Add *.home.local DNS entries pointing to Traefik
   lineinfile:
     path: /etc/hosts
     regexp: ".*{{ item.domain }}\\s*$"

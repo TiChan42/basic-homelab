@@ -22,12 +22,12 @@ Nur Services mit tatsächlichen Endpoints bekommen die entsprechenden Domains:
 
 | Service | Frontend | API | WebSocket |
 |---|---|---|---|
-| Traefik | `traefik.home.lab` | – | – |
+| Traefik | `traefik.home.local` | – | – |
 | MQTT | – (TCP, kein HTTP) | – | – |
-| Home Assistant | `ha.home.lab` | `api.ha.home.lab` | `socket.ha.home.lab` |
-| Node-RED | `nodered.home.lab` | `api.nodered.home.lab` | `socket.nodered.home.lab` |
-| n8n | `n8n.home.lab` | `api.n8n.home.lab` | `socket.n8n.home.lab` |
-| Desktop-BG | `desktop-bg.home.lab` | – (statische Site) | – (statische Site) |
+| Home Assistant | `ha.home.local` | `api.ha.home.local` | `socket.ha.home.local` |
+| Node-RED | `nodered.home.local` | `api.nodered.home.local` | `socket.nodered.home.local` |
+| n8n | `n8n.home.local` | `api.n8n.home.local` | `socket.n8n.home.local` |
+| Desktop-BG | `desktop-bg.home.local` | – (statische Site) | – (statische Site) |
 
 ---
 
@@ -108,22 +108,22 @@ cd ansible-playbooks && bash ../scripts/run-all-playbooks.sh
 ```bash
 ssh root@192.168.1.91 '
 # Frontend-Domains
-for d in traefik.home.lab ha.home.lab nodered.home.lab n8n.home.lab desktop-bg.home.lab; do
+for d in traefik.home.local ha.home.local nodered.home.local n8n.home.local desktop-bg.home.local; do
   code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 https://$d)
   echo "  $d → $code"
 done
 # API-Domains
-for d in api.ha.home.lab api.nodered.home.lab api.n8n.home.lab; do
+for d in api.ha.home.local api.nodered.home.local api.n8n.home.local; do
   code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 https://$d)
   echo "  $d → $code"
 done
 # WebSocket-Domains
-for d in socket.ha.home.lab socket.nodered.home.lab socket.n8n.home.lab; do
+for d in socket.ha.home.local socket.nodered.home.local socket.n8n.home.local; do
   code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 https://$d)
   echo "  $d → $code"
 done
 # HTTP→HTTPS Redirect
-for d in ha.home.lab api.ha.home.lab; do
+for d in ha.home.local api.ha.home.local; do
   code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://$d)
   echo "  http://$d → $code (301=OK)"
 done
