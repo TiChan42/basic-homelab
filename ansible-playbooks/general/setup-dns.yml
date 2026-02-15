@@ -1,0 +1,185 @@
+---
+# ==============================================================================
+# Playbook: Setup dnsmasq as local DNS resolver
+# ==============================================================================
+# Installs dnsmasq on the Proxmox host to resolve *.home.lab domains to the
+# Traefik reverse proxy IP. All other DNS queries are forwarded upstream.
+#
+# How it works:
+#   1. dnsmasq listens on the Proxmox host IP (e.g. 192.168.1.91)
+#   2. Any query matching *.home.lab → Traefik IP (e.g. 192.168.1.100)
+#   3. All other queries → upstream DNS (e.g. router at 192.168.1.1)
+#
+# Client setup:
+#   Configure your router's DHCP to advertise the Proxmox host IP as DNS
+#   server, OR set it manually on individual devices.
+#   Router DHCP DNS → 192.168.1.91 (primary), 192.168.1.1 (fallback)
+#
+# Domain entries are auto-generated from the Ansible inventory – any host
+# with service_traefik.enabled: true gets DNS records for its domain,
+# api_domain, and ws_domain.
+# ==============================================================================
+
+- name: Setup dnsmasq DNS resolver for homelab domains
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  vars_files:
+    - "../inventory/group_vars/all.yml"
+
+  tasks:
+    # ----------------------------------------------------------------
+    # Install dnsmasq
+    # ----------------------------------------------------------------
+    - name: Install dnsmasq
+      apt:
+        name: dnsmasq
+        state: present
+        update_cache: yes
+
+    # ----------------------------------------------------------------
+    # Build domain list from inventory
+    # ----------------------------------------------------------------
+    - name: Build DNS records from inventory
+      set_fact:
+        dns_records: |
+          {% set records = [] %}
+          {% for host in groups['all'] | default([]) %}
+          {% set st = hostvars[host].get('service_traefik', {}) %}
+          {% if st.get('enabled', false) and st.get('domain', '') | length > 0 %}
+          {% set traefik_ip = hostvars[groups['traefik'][0]]['ansible_host'] %}
+          {% set _ = records.append({"domain": st.domain, "ip": traefik_ip}) %}
+          {% if st.get('api_domain', '') | length > 0 %}
+          {% set _ = records.append({"domain": st.api_domain, "ip": traefik_ip}) %}
+          {% endif %}
+          {% if st.get('ws_domain', '') | length > 0 %}
+          {% set _ = records.append({"domain": st.ws_domain, "ip": traefik_ip}) %}
+          {% endif %}
+          {% endif %}
+          {% endfor %}
+          {{ records | to_json }}
+
+    - name: Show DNS records to be configured
+      debug:
+        msg: "{{ item.domain }} → {{ item.ip }}"
+      loop: "{{ dns_records | from_json }}"
+      loop_control:
+        label: "{{ item.domain }}"
+
+    # ----------------------------------------------------------------
+    # Configure dnsmasq
+    # ----------------------------------------------------------------
+    - name: Deploy dnsmasq main configuration
+      copy:
+        dest: /etc/dnsmasq.d/00-homelab.conf
+        mode: '0644'
+        content: |
+          # ==============================================
+          # Homelab DNS – managed by Ansible
+          # ==============================================
+          # Do not read /etc/resolv.conf (we set our own upstream)
+          no-resolv
+
+          # Upstream DNS servers (forwarding for non-homelab queries)
+          server={{ network_dns | default(network_gateway) }}
+          server=1.1.1.1
+          server=8.8.8.8
+
+          # Only listen on LAN interface and loopback
+          listen-address=127.0.0.1
+          listen-address={{ ansible_default_ipv4.address }}
+
+          # Bind only to specific interfaces (security)
+          bind-interfaces
+
+          # Don't forward plain hostnames upstream
+          domain-needed
+          bogus-priv
+
+          # Cache size
+          cache-size=1000
+
+          # Log queries (for debugging, can be removed later)
+          # log-queries
+
+      notify: Restart dnsmasq
+
+    - name: Deploy homelab domain records
+      copy:
+        dest: /etc/dnsmasq.d/10-homelab-domains.conf
+        mode: '0644'
+        content: |
+          # ==============================================
+          # Homelab domain records – managed by Ansible
+          # Auto-generated from inventory (service_traefik)
+          # ==============================================
+          {% for record in dns_records | from_json %}
+          address=/{{ record.domain }}/{{ record.ip }}
+          {% endfor %}
+
+          # Wildcard: resolve any unknown *.{{ traefik_base_domain }} to Traefik
+          address=/.{{ traefik_base_domain }}/{{ hostvars[groups['traefik'][0]]['ansible_host'] }}
+
+      notify: Restart dnsmasq
+
+    # ----------------------------------------------------------------
+    # Make Proxmox host use its own dnsmasq for DNS
+    # ----------------------------------------------------------------
+    - name: Configure Proxmox host to use local dnsmasq
+      copy:
+        dest: /etc/resolv.conf.dnsmasq
+        mode: '0644'
+        content: |
+          # Managed by Ansible – local dnsmasq resolver
+          nameserver 127.0.0.1
+          nameserver {{ network_dns | default(network_gateway) }}
+
+    - name: Point /etc/resolv.conf to local dnsmasq
+      copy:
+        dest: /etc/resolv.conf
+        mode: '0644'
+        content: |
+          # Managed by Ansible – local dnsmasq resolver
+          nameserver 127.0.0.1
+          nameserver {{ network_dns | default(network_gateway) }}
+
+    # ----------------------------------------------------------------
+    # Ensure dnsmasq is enabled and started
+    # ----------------------------------------------------------------
+    - name: Enable and start dnsmasq
+      systemd:
+        name: dnsmasq
+        enabled: yes
+        state: started
+
+    # ----------------------------------------------------------------
+    # Verify DNS resolution
+    # ----------------------------------------------------------------
+    - name: Verify DNS resolution for homelab domains
+      command: "dig +short {{ item.domain }} @127.0.0.1"
+      register: dns_check
+      changed_when: false
+      failed_when: item.ip not in dns_check.stdout
+      loop: "{{ dns_records | from_json }}"
+      loop_control:
+        label: "{{ item.domain }} → {{ item.ip }}"
+
+    - name: Verify upstream DNS forwarding works
+      command: "dig +short google.com @127.0.0.1"
+      register: upstream_check
+      changed_when: false
+      failed_when: upstream_check.stdout | length == 0
+
+    - name: Show DNS setup summary
+      debug:
+        msg: >-
+          dnsmasq is running on {{ ansible_default_ipv4.address }}.
+          All *.{{ traefik_base_domain }} domains resolve to {{ hostvars[groups['traefik'][0]]['ansible_host'] }}.
+          Configure your router DHCP to advertise {{ ansible_default_ipv4.address }} as DNS server,
+          or set it manually on client devices.
+
+  handlers:
+    - name: Restart dnsmasq
+      systemd:
+        name: dnsmasq
+        state: restarted

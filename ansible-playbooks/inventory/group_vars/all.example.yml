@@ -10,9 +10,9 @@
 #   service_id, service_name, service_frontend_port, service_backend_port
 #   service_traefik:
 #     enabled: true/false
-#     domain: "name.home.local"          – main frontend domain
-#     api_domain: "api.name.home.local"  – optional API subdomain
-#     ws_domain: "socket.name.home.local" – optional WebSocket subdomain
+#     domain: "name.home.lab"          – main frontend domain
+#     api_domain: "api.name.home.lab"  – optional API subdomain
+#     ws_domain: "socket.name.home.lab" – optional WebSocket subdomain
 
 # ==============================================================================
 # Proxmox API Connection
