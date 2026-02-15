@@ -7,16 +7,18 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------
-# Check onboarding state
+# Check onboarding state (retry until HA is fully ready)
 # ------------------------------------------------------------------
 - name: Check if HA is already onboarded
   uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/onboarding"
     method: GET
-    status_code: [200]
+    status_code: [200, 404]
     timeout: 10
   register: onboarding_status
-  failed_when: false
+  retries: 30
+  delay: 10
+  until: onboarding_status.status is defined and onboarding_status.status in [200, 404]
   loop: "{{ groups['homeassistant'] }}"
 
 # ------------------------------------------------------------------
@@ -58,6 +60,7 @@
 
 # ------------------------------------------------------------------
 # Path B: Re-run – obtain auth_code via login flow
+# (only when HA is already onboarded / no auth_code from onboarding)
 # ------------------------------------------------------------------
 - name: Initiate login flow
   uri:
@@ -75,7 +78,9 @@
     status_code: [200]
     timeout: 30
   register: login_flow
-  when: item not in (ha_auth_codes | default({}))
+  when:
+    - item not in (ha_auth_codes | default({}))
+    - onboarding_status.results | selectattr('item', 'equalto', item) | map(attribute='status') | first == 404
   loop: "{{ groups['homeassistant'] }}"
 
 - name: Submit credentials to login flow
