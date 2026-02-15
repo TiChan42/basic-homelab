@@ -117,6 +117,10 @@
     - name: Configure static IP address
       include_tasks: tasks/configure_network.yml
 
+    # --- Reverse proxy (Traefik) ---
+    - name: Configure reverse proxy trust
+      include_tasks: tasks/configure_reverse_proxy.yml
+
     # --- Add-on installation ---
     - name: Install and configure add-ons
       include_tasks: tasks/install_addons.yml

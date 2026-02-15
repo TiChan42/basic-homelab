@@ -1,0 +1,85 @@
+---
+# ==============================================================================
+# Tasks: Configure HA reverse proxy support (trusted_proxies)
+# ==============================================================================
+# Adds http: block to HA's configuration.yaml so that HA accepts requests
+# forwarded by Traefik (X-Forwarded-For / X-Forwarded-Proto headers).
+# Uses qm guest exec because HAOS has no SSH by default.
+# ==============================================================================
+
+- name: Read current HA configuration.yaml
+  shell: >-
+    qm guest exec {{ hostvars[item]['service_id'] }} --
+    cat /mnt/data/supervisor/homeassistant/configuration.yaml
+  register: ha_config_raw
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Check if http trusted_proxies is already configured
+  set_fact:
+    ha_proxy_config_needed: >-
+      {{ ha_config_raw.results
+         | selectattr('stdout', 'defined')
+         | map(attribute='stdout')
+         | map('from_json')
+         | map(attribute='out-data')
+         | select('search', 'trusted_proxies')
+         | list | length == 0 }}
+
+- name: Show proxy config status
+  debug:
+    msg: "HA trusted_proxies configuration {{ 'needed' if ha_proxy_config_needed | bool else 'already present' }}"
+
+- name: Add http trusted_proxies to configuration.yaml
+  shell: |
+    qm guest exec {{ hostvars[item]['service_id'] }} -- /bin/sh -c \
+      "printf '\n# Reverse proxy (Traefik) – managed by Ansible\nhttp:\n  use_x_forwarded_for: true\n  trusted_proxies:\n    - {{ hostvars[groups['traefik'][0]]['ansible_host'] }}\n' >> /mnt/data/supervisor/homeassistant/configuration.yaml"
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - ha_proxy_config_needed | bool
+
+- name: Verify configuration.yaml after update
+  shell: >-
+    qm guest exec {{ hostvars[item]['service_id'] }} --
+    cat /mnt/data/supervisor/homeassistant/configuration.yaml
+  register: ha_config_verify
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - ha_proxy_config_needed | bool
+
+- name: Show updated configuration
+  debug:
+    msg: "{{ (ha_config_verify.results[0].stdout | from_json)['out-data'] }}"
+  when: ha_proxy_config_needed | bool
+
+- name: Restart HA Core to apply http config
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /core/restart
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - ha_proxy_config_needed | bool
+  no_log: true
+
+- name: Wait for HA to become available after restart
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/api/"
+    method: GET
+    status_code: [200, 401]
+    timeout: 10
+  register: ha_proxy_restart_check
+  retries: 30
+  delay: 10
+  until: ha_proxy_restart_check.status is defined and ha_proxy_restart_check.status in [200, 401]
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - ha_proxy_config_needed | bool
