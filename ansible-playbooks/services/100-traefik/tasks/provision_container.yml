@@ -107,7 +107,7 @@
 - name: Add *.home.lab DNS entries pointing to Traefik
   lineinfile:
     path: /etc/hosts
-    regexp: ".*{{ item.domain }}$"
+    regexp: ".*{{ item.domain }}\\s*$"
     line: "{{ hostvars[groups['traefik'][0]]['ansible_host'] }} {{ ([item.domain] + ([item.api_domain] if item.api_domain else []) + ([item.ws_domain] if item.ws_domain else [])) | join(' ') }}"
     state: present
     mode: '0644'
