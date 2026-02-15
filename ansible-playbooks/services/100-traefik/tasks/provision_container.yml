@@ -108,7 +108,7 @@
   lineinfile:
     path: /etc/hosts
     regexp: ".*{{ item.domain }}$"
-    line: "{{ hostvars[groups['traefik'][0]]['ansible_host'] }} {{ item.domain }} {{ item.api_domain }} {{ item.ws_domain }}"
+    line: "{{ hostvars[groups['traefik'][0]]['ansible_host'] }} {{ ([item.domain] + ([item.api_domain] if item.api_domain else []) + ([item.ws_domain] if item.ws_domain else [])) | join(' ') }}"
     state: present
     mode: '0644'
   loop: "{{ traefik_dns_entries | from_json }}"
