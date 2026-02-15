@@ -17,6 +17,12 @@ PACKAGES=(
   ansible
 )
 
+# Python packages needed by Ansible filters (e.g. password_hash)
+PIP_PACKAGES=(
+  passlib
+  bcrypt
+)
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Please run as root (e.g., in the Proxmox shell you are usually root)."
   exit 1
@@ -33,6 +39,13 @@ echo "==> Installing necessary packages"
 for pkg in "${PACKAGES[@]}"; do
   echo "==> Installing $pkg"
   apt-get install -y --no-install-recommends "$pkg"
+done
+
+echo
+echo "==> Installing Python packages via pip"
+for pkg in "${PIP_PACKAGES[@]}"; do
+  echo "==> pip install $pkg"
+  pip3 install --break-system-packages "$pkg"
 done
 
 echo
