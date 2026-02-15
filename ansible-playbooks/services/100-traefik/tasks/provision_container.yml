@@ -94,15 +94,15 @@
 
 - name: Build list of Traefik DNS entries
   set_fact:
-    traefik_dns_entries: >-
-      [
+    traefik_dns_entries: |
+      {% set entries = [] %}
       {% for host in groups['all'] | default([]) %}
       {% set st = hostvars[host].get('service_traefik', {}) %}
       {% if st.get('enabled', false) and st.get('domain', '') | length > 0 %}
-      {"domain": "{{ st.domain }}", "api_domain": "{{ st.get('api_domain', '') }}", "ws_domain": "{{ st.get('ws_domain', '') }}"},
+      {% set _ = entries.append({"domain": st.domain, "api_domain": st.get('api_domain', ''), "ws_domain": st.get('ws_domain', '')}) %}
       {% endif %}
       {% endfor %}
-      ]
+      {{ entries | to_json }}
 
 - name: Add *.home.lab DNS entries pointing to Traefik
   lineinfile:
@@ -111,7 +111,7 @@
     line: "{{ hostvars[groups['traefik'][0]]['ansible_host'] }} {{ item.domain }} {{ item.api_domain }} {{ item.ws_domain }}"
     state: present
     mode: '0644'
-  loop: "{{ traefik_dns_entries }}"
+  loop: "{{ traefik_dns_entries | from_json }}"
   loop_control:
     label: "{{ item.domain }}"
 
