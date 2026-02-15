@@ -23,3 +23,8 @@
 - name: Print n8n status
   debug:
     msg: "{{ n8n_status.stdout_lines }}"
+
+- name: Run initial backup to NAS
+  command: "{{ n8n_backup_script_path }}"
+  changed_when: false
+  failed_when: false

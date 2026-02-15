@@ -27,6 +27,18 @@ fi
 
 mkdir -p "$BACKUP_DIR"
 
+# 1b. Overwrite protection: skip if password file is empty but existing backup has data
+if [ -f "$PASSWD_FILE" ]; then
+  PASSWD_ENTRIES=$(grep -c . "$PASSWD_FILE" 2>/dev/null || echo "0")
+  if [ "$PASSWD_ENTRIES" -eq 0 ] && [ -f "${BACKUP_PREFIX}.0.tar.gz" ]; then
+    OLD_ENTRIES=$(tar -xzf "${BACKUP_PREFIX}.0.tar.gz" -O "etc/mosquitto/passwd" 2>/dev/null | grep -c . 2>/dev/null || echo "0")
+    if [ "${OLD_ENTRIES:-0}" -gt 0 ]; then
+      logger -t "$LOG_TAG" "WARNING: Password file is empty but existing backup has ${OLD_ENTRIES} entries. Skipping backup to prevent data loss."
+      exit 0
+    fi
+  fi
+fi
+
 # 2. Stop Mosquitto to ensure data consistency
 systemctl stop mosquitto
 sleep 2

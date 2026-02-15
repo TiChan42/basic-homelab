@@ -28,10 +28,17 @@ if ! mountpoint -q "{{ nas_mount }}"; then
   exit 1
 fi
 
-# Check if local data is present
+# Check if local data is present and has meaningful content
 if [ -f "$DATA_DIR/flows.json" ]; then
-  logger -t "$LOG_TAG" "Local flows.json present. No restore needed."
-  exit 0
+  FLOW_SIZE=$(stat -c%s "$DATA_DIR/flows.json" 2>/dev/null || echo "0")
+  if [ "$FLOW_SIZE" -gt 10 ]; then
+    logger -t "$LOG_TAG" "Local flows.json present (${FLOW_SIZE} bytes). No restore needed."
+    exit 0
+  else
+    logger -t "$LOG_TAG" "Local flows.json exists but appears empty (${FLOW_SIZE} bytes). Removing for restore."
+    systemctl stop nodered 2>/dev/null || true
+    rm -f "$DATA_DIR/flows.json" "$DATA_DIR/flows_cred.json"
+  fi
 fi
 
 # -----------------------------------------------

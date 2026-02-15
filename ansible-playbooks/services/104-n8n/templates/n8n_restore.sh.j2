@@ -28,10 +28,33 @@ if ! mountpoint -q "{{ nas_mount }}"; then
   exit 1
 fi
 
-# Check if local data is present
+# Check if local data is present and has meaningful content
 if [ -f "$DATA_DIR/database.sqlite" ]; then
-  logger -t "$LOG_TAG" "Local database present. No restore needed."
-  exit 0
+  WORKFLOW_COUNT=0
+  if command -v python3 &>/dev/null; then
+    WORKFLOW_COUNT=$(python3 -c "
+import sqlite3
+try:
+    conn = sqlite3.connect('$DATA_DIR/database.sqlite')
+    c = conn.cursor()
+    c.execute('PRAGMA wal_checkpoint(FULL)')
+    c.execute('SELECT COUNT(*) FROM workflow_entity')
+    count = c.fetchone()[0]
+    conn.close()
+    print(count)
+except:
+    print(0)
+" 2>/dev/null) || WORKFLOW_COUNT=0
+  fi
+
+  if [ "$WORKFLOW_COUNT" -gt 0 ]; then
+    logger -t "$LOG_TAG" "Local database present with $WORKFLOW_COUNT workflow(s). No restore needed."
+    exit 0
+  else
+    logger -t "$LOG_TAG" "Database exists but has no workflows (empty/fresh). Removing for restore."
+    systemctl stop n8n 2>/dev/null || true
+    rm -f "$DATA_DIR/database.sqlite" "$DATA_DIR/database.sqlite-wal" "$DATA_DIR/database.sqlite-shm"
+  fi
 fi
 
 # -----------------------------------------------

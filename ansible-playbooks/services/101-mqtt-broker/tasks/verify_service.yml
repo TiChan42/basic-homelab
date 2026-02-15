@@ -23,3 +23,8 @@
 - name: Print Mosquitto status
   debug:
     msg: "{{ mqtt_status.stdout_lines }}"
+
+- name: Run initial backup to NAS
+  command: "{{ mqtt_backup_script_path }}"
+  changed_when: false
+  failed_when: false

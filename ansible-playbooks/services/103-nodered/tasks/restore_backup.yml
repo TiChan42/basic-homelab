@@ -10,6 +10,12 @@
     state: directory
     mode: '0777'
 
+- name: Stop Node-RED before restore check (in case of re-run)
+  systemd:
+    name: nodered
+    state: stopped
+  failed_when: false
+
 - name: Check if local Node-RED flows exist
   stat:
     path: "{{ nodered_data_dir }}/flows.json"

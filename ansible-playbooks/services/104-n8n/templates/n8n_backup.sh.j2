@@ -34,6 +34,16 @@ mkdir -p "$DATA_DIR/workflow_export" "$DATA_DIR/credential_export"
 n8n export:workflow --all --output="$DATA_DIR/workflow_export/" 2>/dev/null || true
 n8n export:credentials --all --output="$DATA_DIR/credential_export/" 2>/dev/null || true
 
+# 2b. Overwrite protection: skip if current state has no workflows but existing backup does
+NEW_WF_COUNT=$(find "$DATA_DIR/workflow_export" -name "*.json" -type f 2>/dev/null | wc -l)
+if [ "$NEW_WF_COUNT" -eq 0 ] && [ -f "${BACKUP_PREFIX}.0.tar.gz" ]; then
+  OLD_WF_COUNT=$(tar -tzf "${BACKUP_PREFIX}.0.tar.gz" 2>/dev/null | grep -c "workflow_export/.*\.json$" || true)
+  if [ "${OLD_WF_COUNT:-0}" -gt 0 ]; then
+    logger -t "$LOG_TAG" "WARNING: Current state has 0 workflows but existing backup has ${OLD_WF_COUNT}. Skipping backup to prevent data loss."
+    exit 0
+  fi
+fi
+
 # 3. Create tar.gz archive to temporary file
 ARCHIVE_CONTENTS=()
 

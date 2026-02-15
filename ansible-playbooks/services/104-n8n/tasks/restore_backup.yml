@@ -1,8 +1,10 @@
 ---
-# tasks/restore_backup.yml – NAS-Backup prüfen & wiederherstellen (nur bei fehlender Datenbank)
+# tasks/restore_backup.yml – NAS-Backup prüfen & wiederherstellen
 #
 # Läuft im Container (hosts: n8n).
-# Idempotent: Wird übersprungen, wenn lokale Daten bereits vorhanden sind.
+# Idempotent: Wird übersprungen, wenn lokale Daten mit echtem Inhalt vorhanden sind.
+# Eine leere Datenbank (0 Workflows, z.B. nach Auto-Start) wird entfernt,
+# damit ein vorhandenes NAS-Backup wiederhergestellt werden kann.
 
 - name: Ensure n8n backup directory on NAS exists
   file:
@@ -10,7 +12,48 @@
     state: directory
     mode: '0777'
 
+- name: Stop n8n before restore check (in case of re-run)
+  systemd:
+    name: n8n
+    state: stopped
+  failed_when: false
+
 - name: Check if local n8n database exists
+  stat:
+    path: "{{ n8n_data_dir }}/database.sqlite"
+  register: n8n_db_file
+
+- name: Check if existing database has real data (workflows)
+  shell: |
+    python3 -c "
+    import sqlite3
+    try:
+        conn = sqlite3.connect('{{ n8n_data_dir }}/database.sqlite')
+        c = conn.cursor()
+        c.execute('PRAGMA wal_checkpoint(FULL)')
+        c.execute('SELECT COUNT(*) FROM workflow_entity')
+        print(c.fetchone()[0])
+        conn.close()
+    except:
+        print(0)"
+  register: n8n_workflow_count
+  when: n8n_db_file.stat.exists
+  failed_when: false
+  changed_when: false
+
+- name: Remove empty database to allow restore from NAS backup
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ n8n_data_dir }}/database.sqlite"
+    - "{{ n8n_data_dir }}/database.sqlite-wal"
+    - "{{ n8n_data_dir }}/database.sqlite-shm"
+  when:
+    - n8n_db_file.stat.exists
+    - (n8n_workflow_count.stdout | default('0') | trim) == '0'
+
+- name: Re-check if local n8n database exists after cleanup
   stat:
     path: "{{ n8n_data_dir }}/database.sqlite"
   register: n8n_db_file

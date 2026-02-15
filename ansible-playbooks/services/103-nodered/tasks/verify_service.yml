@@ -23,3 +23,8 @@
 - name: Print Node-RED status
   debug:
     msg: "{{ nodered_status.stdout_lines }}"
+
+- name: Run initial backup to NAS
+  command: "{{ nodered_backup_script_path }}"
+  changed_when: false
+  failed_when: false
