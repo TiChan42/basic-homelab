@@ -163,7 +163,17 @@ for instance in "${HA_INSTANCES[@]}"; do
     continue
   fi
 
-  # All checks passed – rotate numbered backups
+  # All checks passed – overwrite protection
+  if [ -f "${BACKUP_PREFIX}.0.tar" ]; then
+    EXISTING_SIZE=$(stat -c%s "${BACKUP_PREFIX}.0.tar" 2>/dev/null || echo "0")
+    if [ "$EXISTING_SIZE" -gt "$MIN_BACKUP_SIZE" ] && [ "$FILE_SIZE" -lt $(( EXISTING_SIZE / 2 )) ]; then
+      logger -t "$INSTANCE_TAG" "WARNING: New backup (${FILE_SIZE} bytes) is less than half the existing (${EXISTING_SIZE} bytes). Skipping to prevent data loss."
+      rm -f "$TMP_FILE"
+      continue
+    fi
+  fi
+
+  # Rotate numbered backups
   rm -f "${BACKUP_PREFIX}.$((KEEP_COUNT - 1)).tar"
 
   for (( i = KEEP_COUNT - 2; i >= 0; i-- )); do

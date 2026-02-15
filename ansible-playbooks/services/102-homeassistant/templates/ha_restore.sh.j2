@@ -1,0 +1,155 @@
+#!/bin/bash
+# ============================================
+# Home Assistant Restore Script – managed by Ansible
+# Restores HA from a validated NAS backup by
+# uploading it to HA and triggering a full restore
+# via the Supervisor API.
+# ============================================
+set -euo pipefail
+
+REFRESH_TOKEN_FILE="{{ ha_refresh_token_file }}"
+BACKUP_DIR="{{ nas_backup_mount }}/homeassistant/homeassistant"
+KEEP_COUNT={{ ha_backup_keep_count }}
+MIN_BACKUP_SIZE={{ ha_backup_min_size }}
+API_HELPER="{{ ha_supervisor_api_path | default('/home/homelab/basic-homelab/ansible-playbooks/services/102-homeassistant/files/ha_supervisor_api.py') }}"
+LOG_TAG="ha-restore"
+HA_URL="http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+
+BACKUP_PREFIX="$BACKUP_DIR/ha_backup"
+
+# -----------------------------------------------
+# Helper: obtain a fresh access token via refresh
+# -----------------------------------------------
+get_access_token() {
+  local TOKEN_RESPONSE
+  TOKEN_RESPONSE=$(curl -s -X POST "$HA_URL/auth/token" \
+    -d "grant_type=refresh_token" \
+    -d "client_id=$HA_URL/" \
+    -d "refresh_token=$REFRESH_TOKEN")
+
+  echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty'
+}
+
+# -----------------------------------------------
+# Helper: validate a backup archive
+# -----------------------------------------------
+validate_backup() {
+  local ARCHIVE="$1"
+
+  if [ ! -f "$ARCHIVE" ]; then
+    return 1
+  fi
+
+  if [ ! -s "$ARCHIVE" ]; then
+    logger -t "$LOG_TAG" "Validation failed: $(basename "$ARCHIVE") is empty."
+    return 1
+  fi
+
+  local FILE_SIZE
+  FILE_SIZE=$(stat -c%s "$ARCHIVE" 2>/dev/null || stat -f%z "$ARCHIVE" 2>/dev/null || echo "0")
+  if [ "$FILE_SIZE" -lt "$MIN_BACKUP_SIZE" ]; then
+    logger -t "$LOG_TAG" "Validation failed: $(basename "$ARCHIVE") too small (${FILE_SIZE} bytes)."
+    return 1
+  fi
+
+  if ! tar -tf "$ARCHIVE" > /dev/null 2>&1; then
+    logger -t "$LOG_TAG" "Validation failed: $(basename "$ARCHIVE") is not a valid tar archive."
+    return 1
+  fi
+
+  return 0
+}
+
+# -----------------------------------------------
+# Prerequisites
+# -----------------------------------------------
+if [ ! -f "$REFRESH_TOKEN_FILE" ]; then
+  logger -t "$LOG_TAG" "ERROR: Refresh token file not found at $REFRESH_TOKEN_FILE. Cannot restore."
+  exit 1
+fi
+REFRESH_TOKEN=$(cat "$REFRESH_TOKEN_FILE")
+
+if [ ! -f "$API_HELPER" ]; then
+  logger -t "$LOG_TAG" "ERROR: API helper not found at $API_HELPER"
+  exit 1
+fi
+
+# Check NFS mount is available
+if ! mountpoint -q "{{ nas_mount }}"; then
+  logger -t "$LOG_TAG" "ERROR: NAS mount not available at {{ nas_mount }}"
+  exit 1
+fi
+
+# Check if HA is reachable first
+HA_TOKEN=$(get_access_token)
+if [ -z "$HA_TOKEN" ]; then
+  logger -t "$LOG_TAG" "ERROR: Failed to obtain access token. HA may not be ready."
+  exit 1
+fi
+
+# Check if HA already has data (integrations as indicator)
+HA_CONFIG=$(curl -s -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/config" 2>/dev/null || echo "{}")
+COMPONENT_COUNT=$(echo "$HA_CONFIG" | jq '.components | length' 2>/dev/null || echo "0")
+
+if [ "${COMPONENT_COUNT:-0}" -gt 20 ]; then
+  logger -t "$LOG_TAG" "HA already configured ($COMPONENT_COUNT components loaded). No restore needed."
+  exit 0
+fi
+
+logger -t "$LOG_TAG" "HA has only $COMPONENT_COUNT components – checking for NAS backup to restore..."
+
+# -----------------------------------------------
+# Find best available backup (0 → 1 → 2 → ...)
+# -----------------------------------------------
+RESTORE_FILE=""
+
+for (( i = 0; i < KEEP_COUNT; i++ )); do
+  CANDIDATE="${BACKUP_PREFIX}.${i}.tar"
+  if validate_backup "$CANDIDATE"; then
+    RESTORE_FILE="$CANDIDATE"
+    if [ "$i" -gt 0 ]; then
+      logger -t "$LOG_TAG" "WARNING: Backups 0-$((i-1)) invalid, falling back to backup ${i}."
+    else
+      logger -t "$LOG_TAG" "Using newest backup (0)."
+    fi
+    break
+  fi
+done
+
+if [ -z "$RESTORE_FILE" ]; then
+  logger -t "$LOG_TAG" "No valid NAS backup found (checked 0-$((KEEP_COUNT-1))). Starting fresh."
+  exit 0
+fi
+
+FILE_SIZE=$(stat -c%s "$RESTORE_FILE" 2>/dev/null || echo "0")
+logger -t "$LOG_TAG" "Restoring from $(basename "$RESTORE_FILE") (${FILE_SIZE} bytes)..."
+
+# -----------------------------------------------
+# Step 1: Upload backup to HA
+# -----------------------------------------------
+logger -t "$LOG_TAG" "Uploading backup to HA..."
+
+UPLOAD_RESP=$(curl -s -w "\n%{http_code}" -X POST \
+  "$HA_URL/api/hassio/backups/new/upload" \
+  -H "Authorization: Bearer $HA_TOKEN" \
+  -F "file=@$RESTORE_FILE")
+
+UPLOAD_HTTP=$(echo "$UPLOAD_RESP" | tail -1)
+UPLOAD_BODY=$(echo "$UPLOAD_RESP" | head -1)
+BACKUP_SLUG=$(echo "$UPLOAD_BODY" | jq -r '.data.slug // empty' 2>/dev/null)
+
+if [ "$UPLOAD_HTTP" != "200" ] || [ -z "$BACKUP_SLUG" ]; then
+  logger -t "$LOG_TAG" "ERROR: Backup upload failed (HTTP $UPLOAD_HTTP). Response: $UPLOAD_BODY"
+  exit 1
+fi
+
+logger -t "$LOG_TAG" "Backup uploaded (slug: $BACKUP_SLUG). Triggering full restore..."
+
+# -----------------------------------------------
+# Step 2: Trigger full restore via WebSocket API
+# -----------------------------------------------
+RESTORE_RESP=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws backup/restore/full \
+  "{\"backup_id\":\"$BACKUP_SLUG\",\"agent_id\":\"hassio.local\"}" 2>&1) || true
+
+logger -t "$LOG_TAG" "Restore triggered. Response: $RESTORE_RESP"
+logger -t "$LOG_TAG" "HA will restart automatically. Restore complete."

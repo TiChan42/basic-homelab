@@ -17,6 +17,12 @@
     dest: "{{ ha_backup_script_path }}"
     mode: '0750'
 
+- name: Deploy HA restore script
+  template:
+    src: templates/ha_restore.sh.j2
+    dest: "{{ ha_restore_script_path }}"
+    mode: '0750'
+
 - name: Set up periodic HA backup via cron
   cron:
     name: "Home Assistant backup to NAS"
@@ -25,3 +31,8 @@
     job: "{{ ha_backup_script_path }} 2>&1 | logger -t ha-backup-cron"
     user: root
     state: present
+
+- name: Run initial HA backup to NAS
+  command: "{{ ha_backup_script_path }}"
+  changed_when: false
+  failed_when: false
