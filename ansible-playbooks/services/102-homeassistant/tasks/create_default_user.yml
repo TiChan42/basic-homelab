@@ -1,0 +1,81 @@
+---
+# ==============================================================================
+# Tasks: Create the personal (default) user in Home Assistant
+# ==============================================================================
+# After onboarding creates the admin user, this task creates an additional
+# personal user account (default_user) for day-to-day use.
+#
+# Uses the HA REST API:  POST /api/config/auth_provider/homeassistant
+# Requires: ha_tokens (set by onboarding.yml)
+# ==============================================================================
+
+# ------------------------------------------------------------------
+# Check if the default user already exists (via WebSocket)
+# ------------------------------------------------------------------
+- name: List existing HA users via WebSocket
+  shell: >-
+    python3 {{ playbook_dir }}/files/ha_supervisor_api.py
+    "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    ws
+    "config/auth/list"
+  register: ha_users_list
+  failed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Check if default user already exists
+  set_fact:
+    ha_default_user_exists: >-
+      {{ (ha_users_list.results | default([]))
+         | selectattr('rc', 'defined')
+         | selectattr('rc', 'equalto', 0)
+         | map(attribute='stdout')
+         | map('from_json')
+         | flatten
+         | selectattr('username', 'defined')
+         | selectattr('username', 'equalto', default_user)
+         | list
+         | length > 0 }}
+  failed_when: false
+
+- name: Skip default user creation (already exists)
+  debug:
+    msg: "Default user '{{ default_user }}' already exists in Home Assistant – skipping."
+  when: ha_default_user_exists | default(false) | bool
+
+# ------------------------------------------------------------------
+# Create the default user via WebSocket API (two-step flow)
+# ------------------------------------------------------------------
+# Step 1: config/auth/create          → creates the HA User object
+# Step 2: config/auth_provider/homeassistant/create → credentials
+# Both steps are handled inside ha_supervisor_api.py create-user.
+# ------------------------------------------------------------------
+- name: Create default personal user in Home Assistant
+  shell: >-
+    python3 {{ playbook_dir }}/files/ha_supervisor_api.py
+    create-user
+    --url "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}"
+    --token "{{ ha_tokens[item] }}"
+    --username "{{ default_user }}"
+    --password "{{ default_password }}"
+    --display-name "{{ default_user | capitalize }}"
+  register: create_default_user_result
+  changed_when: >-
+    create_default_user_result.rc == 0
+    and (create_default_user_result.stdout | default('{}') | from_json).get('created', false)
+  failed_when:
+    - create_default_user_result.rc != 0
+    - "'already exists' not in (create_default_user_result.stdout | default('') + create_default_user_result.stderr | default(''))"
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (ha_default_user_exists | default(false) | bool)
+  no_log: true
+
+- name: Show default user creation result
+  debug:
+    msg: >-
+      Default user '{{ default_user }}': {{ 'created successfully' if (create_default_user_result.results | default([]) |
+      selectattr('changed', 'defined') | selectattr('changed') | list | length > 0) else 'already exists or skipped' }}

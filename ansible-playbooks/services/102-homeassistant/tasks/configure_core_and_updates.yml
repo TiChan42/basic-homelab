@@ -11,7 +11,7 @@
 # ------------------------------------------------------------------
 - name: Check current HA Core configuration
   uri:
-    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/api/config"
+    url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/config"
     method: GET
     headers:
       Authorization: "Bearer {{ ha_tokens[item] }}"
@@ -46,7 +46,7 @@
         print('websocket-client not installed', file=sys.stderr)
         sys.exit(1)
 
-    ws = websocket.create_connection('ws://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/api/websocket')
+    ws = websocket.create_connection('ws://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/websocket')
     msg = json.loads(ws.recv())
     if msg.get('type') != 'auth_required':
         print(f'Unexpected: {msg}', file=sys.stderr); sys.exit(1)
@@ -88,8 +88,8 @@
 # ------------------------------------------------------------------
 - name: Check for available HAOS update
   shell: >-
-    python3 /usr/local/bin/ha_supervisor_api.py
-    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    python3 {{ playbook_dir }}/files/ha_supervisor_api.py
+    "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}"
     "{{ ha_tokens[item] }}"
     GET
     /os/info
@@ -122,8 +122,8 @@
 
 - name: Apply HAOS update
   shell: >-
-    python3 /usr/local/bin/ha_supervisor_api.py
-    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    python3 {{ playbook_dir }}/files/ha_supervisor_api.py
+    "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}"
     "{{ ha_tokens[item] }}"
     POST
     /os/update
@@ -141,7 +141,7 @@
 
 - name: Wait for HA to become available after OS update
   uri:
-    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/api/"
+    url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/"
     method: GET
     status_code: [200, 401]
     timeout: 10

@@ -10,7 +10,35 @@
 # ============================================
 
 http:
+{% if traefik_dashboard_user is defined and not (traefik_dashboard_insecure | default(true) | bool) %}
+  # --- Dashboard authentication middleware ---
+  middlewares:
+    dashboard-auth:
+      basicAuth:
+        users:
+          - "{{ traefik_dashboard_user }}:{{ traefik_dashboard_password | password_hash('apr_md5_crypt') }}"
+{% endif %}
+
   routers:
+{% if traefik_dashboard_user is defined and not (traefik_dashboard_insecure | default(true) | bool) %}
+    # ------------------------------------------------------------------
+    # Traefik Dashboard – authenticated access
+    # ------------------------------------------------------------------
+    traefik-dashboard:
+      rule: "Host(`{{ hostvars['traefik']['service_traefik']['domain'] | default('traefik.' + traefik_base_domain) }}`)"
+      entryPoints:
+        - websecure
+      service: api@internal
+      middlewares:
+        - dashboard-auth
+{% if traefik_acme_enabled | default(false) | bool %}
+      tls:
+        certResolver: letsencrypt
+{% else %}
+      tls: {}
+{% endif %}
+
+{% endif %}
 {% for host in groups['all'] | default([]) %}
 {% set svc_traefik = hostvars[host].get('service_traefik', {}) %}
 {% if svc_traefik.get('enabled', false) | bool and svc_traefik.get('domain', '') | length > 0 %}

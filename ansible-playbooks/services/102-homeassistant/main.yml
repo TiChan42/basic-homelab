@@ -105,6 +105,10 @@
     - name: Complete onboarding and authenticate
       include_tasks: tasks/onboarding.yml
 
+    # --- Create personal (default) user ---
+    - name: Create default user for day-to-day use
+      include_tasks: tasks/create_default_user.yml
+
     # --- Core config (country, timezone) & OS updates ---
     - name: Configure core settings and apply updates
       include_tasks: tasks/configure_core_and_updates.yml

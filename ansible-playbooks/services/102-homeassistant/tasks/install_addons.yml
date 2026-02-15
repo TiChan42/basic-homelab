@@ -74,8 +74,8 @@
           "socat": {"enabled": false},
           "mqtt": {
             "server": "mqtt://" + ha_z2m_mqtt_broker_ip + ":" + (mqtt_port | string),
-            "user": mqtt_default_user,
-            "password": mqtt_default_password,
+            "user": ha_z2m_mqtt_user,
+            "password": ha_z2m_mqtt_password,
             "base_topic": "zigbee2mqtt"},
           "serial": {
             "port": ha_z2m_serial_port,

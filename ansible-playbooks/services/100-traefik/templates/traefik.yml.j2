@@ -27,6 +27,9 @@ entryPoints:
 api:
   dashboard: {{ traefik_dashboard_enabled | default(true) | lower }}
   insecure: {{ traefik_dashboard_insecure | default(true) | lower }}
+{% if not (traefik_dashboard_insecure | default(true) | bool) %}
+  # When insecure is false, dashboard is served via router with auth middleware
+{% endif %}
 
 ping:
   entryPoint: traefik

@@ -12,6 +12,23 @@ module.exports = {
     // --- Credential encryption ---
     credentialSecret: '{{ nodered_credential_secret }}',
 
+    // --- Admin Authentication ---
+    adminAuth: {
+        type: "credentials",
+        users: [
+            {
+                username: "{{ nodered_admin_user }}",
+                password: "{{ nodered_admin_password | password_hash('bcrypt') }}",
+                permissions: "*"
+            },
+            {
+                username: "{{ default_user }}",
+                password: "{{ default_password | password_hash('bcrypt') }}",
+                permissions: "read"
+            }
+        ]
+    },
+
     // --- Network ---
     uiPort: {{ service_backend_port }},
     uiHost: "0.0.0.0",

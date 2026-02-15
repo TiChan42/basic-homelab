@@ -47,7 +47,9 @@
 
 - name: Store onboarding auth codes
   set_fact:
-    ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({item.item: item.json.auth_code}) }}"
+    ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({_host: item.json.auth_code}) }}"
+  vars:
+    _host: "{{ item.item.item }}"
   loop: "{{ onboarding_result.results }}"
   no_log: true
   when:
@@ -61,10 +63,14 @@
   uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/auth/login_flow"
     method: POST
+    headers:
+      Origin: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}"
     body_format: json
     body:
       client_id: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/"
-      handler: ["homeassistant", null]
+      handler:
+        - "homeassistant"
+        - null
       redirect_uri: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/"
     status_code: [200]
     timeout: 30
@@ -76,6 +82,8 @@
   uri:
     url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.json.flow_id }}"
     method: POST
+    headers:
+      Origin: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}"
     body_format: json
     body:
       username: "{{ ha_admin_user }}"

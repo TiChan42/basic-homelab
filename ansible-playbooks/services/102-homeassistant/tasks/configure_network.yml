@@ -66,10 +66,14 @@
   uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/login_flow"
     method: POST
+    headers:
+      Origin: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
     body_format: json
     body:
       client_id: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/"
-      handler: ["homeassistant", null]
+      handler:
+        - homeassistant
+        - null
       redirect_uri: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/"
     status_code: [200]
     timeout: 30
@@ -81,6 +85,8 @@
   uri:
     url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.json.flow_id }}"
     method: POST
+    headers:
+      Origin: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
     body_format: json
     body:
       username: "{{ ha_admin_user }}"

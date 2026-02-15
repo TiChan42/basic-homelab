@@ -35,20 +35,45 @@
   notify: Restart Mosquitto
 
 # ------------------------------------------------------------------
-# Authentifizierung (nur beim Erstsetup – Backup-Restore hat Vorrang)
+# Authentifizierung – Passwörter werden bei jedem Lauf aktualisiert
 # ------------------------------------------------------------------
 - name: Check if password file already exists
   stat:
     path: "{{ mqtt_password_file }}"
   register: passwd_file
 
-- name: Create initial MQTT user
+- name: Create initial password file with admin user
   shell: |
-    mosquitto_passwd -b -c {{ mqtt_password_file }} {{ mqtt_default_user | quote }} {{ mqtt_default_password | quote }}
+    mosquitto_passwd -b -c {{ mqtt_password_file }} {{ mqtt_admin_user | quote }} {{ mqtt_admin_password | quote }}
   when:
     - mqtt_auth_enabled | default(true) | bool
     - not passwd_file.stat.exists
   no_log: true
+
+- name: Ensure MQTT admin user password is current
+  shell: |
+    mosquitto_passwd -b {{ mqtt_password_file }} {{ mqtt_admin_user | quote }} {{ mqtt_admin_password | quote }}
+  when:
+    - mqtt_auth_enabled | default(true) | bool
+    - passwd_file.stat.exists
+  no_log: true
+  notify: Restart Mosquitto
+
+- name: Ensure MQTT machine user password is current
+  shell: |
+    mosquitto_passwd -b {{ mqtt_password_file }} {{ mqtt_machine_user | quote }} {{ mqtt_machine_password | quote }}
+  when:
+    - mqtt_auth_enabled | default(true) | bool
+  no_log: true
+  notify: Restart Mosquitto
+
+- name: Ensure MQTT default user password is current
+  shell: |
+    mosquitto_passwd -b {{ mqtt_password_file }} {{ default_user | quote }} {{ default_password | quote }}
+  when:
+    - mqtt_auth_enabled | default(true) | bool
+  no_log: true
+  notify: Restart Mosquitto
 
 - name: Set password file permissions
   file:
