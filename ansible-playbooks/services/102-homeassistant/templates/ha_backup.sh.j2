@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================
 # Home Assistant Backup Script
-# Auto-generated loop for all HA instances.
-# Uses refresh token to obtain fresh access tokens.
+# Uses WebSocket API via ha_supervisor_api.py
+# for reliable backup creation & download.
 # Numbered rotation (0 = newest) with validation.
 # ============================================
 set -euo pipefail
@@ -11,14 +11,26 @@ REFRESH_TOKEN_FILE="{{ ha_refresh_token_file }}"
 BACKUP_DIR_ROOT="{{ nas_backup_mount }}/homeassistant"
 KEEP_COUNT={{ ha_backup_keep_count }}
 MIN_BACKUP_SIZE={{ ha_backup_min_size }}
+API_HELPER="{{ ha_supervisor_api_path | default('/home/homelab/basic-homelab/ansible-playbooks/services/102-homeassistant/files/ha_supervisor_api.py') }}"
+LOG_TAG="ha-backup"
 
-# Verify refresh token file exists
+# Verify prerequisites
 if [ ! -f "$REFRESH_TOKEN_FILE" ]; then
-  logger -t "ha-backup" "ERROR: Refresh token file not found at $REFRESH_TOKEN_FILE"
-  logger -t "ha-backup" "Re-run the homeassistant playbook to generate it."
+  logger -t "$LOG_TAG" "ERROR: Refresh token file not found at $REFRESH_TOKEN_FILE"
   exit 1
 fi
 REFRESH_TOKEN=$(cat "$REFRESH_TOKEN_FILE")
+
+if [ ! -f "$API_HELPER" ]; then
+  logger -t "$LOG_TAG" "ERROR: API helper not found at $API_HELPER"
+  exit 1
+fi
+
+# Check NFS mount is available
+if ! mountpoint -q "{{ nas_mount }}"; then
+  logger -t "$LOG_TAG" "ERROR: NAS mount not available at {{ nas_mount }}"
+  exit 1
+fi
 
 # List of HA instances (IP:NAME)
 HA_INSTANCES=(
@@ -45,71 +57,93 @@ for instance in "${HA_INSTANCES[@]}"; do
   IP="${instance%%:*}"
   NAME="${instance##*:}"
   HA_URL="http://$IP:{{ ha_port | default('8123') }}"
-  LOG_TAG="ha-backup-$NAME"
+  INSTANCE_TAG="ha-backup-$NAME"
   BACKUP_DIR="$BACKUP_DIR_ROOT/$NAME"
   BACKUP_PREFIX="$BACKUP_DIR/ha_backup"
 
   mkdir -p "$BACKUP_DIR"
-  logger -t "$LOG_TAG" "Starting backup for $NAME ($IP)..."
+  logger -t "$INSTANCE_TAG" "Starting backup for $NAME ($IP)..."
 
   # Obtain fresh access token
   HA_TOKEN=$(get_access_token "$HA_URL")
   if [ -z "$HA_TOKEN" ]; then
-    logger -t "$LOG_TAG" "ERROR: Failed to obtain access token. Skipping."
+    logger -t "$INSTANCE_TAG" "ERROR: Failed to obtain access token. Skipping."
     continue
   fi
 
-  # Check if API is reachable
+  # Check if HA is reachable
   HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     -H "Authorization: Bearer $HA_TOKEN" \
     "$HA_URL/api/" || echo "000")
 
   if [ "$HTTP_CODE" != "200" ]; then
-    logger -t "$LOG_TAG" "ERROR: HA API not reachable (HTTP $HTTP_CODE). Skipping."
+    logger -t "$INSTANCE_TAG" "ERROR: HA API not reachable (HTTP $HTTP_CODE). Skipping."
     continue
   fi
 
-  # Trigger backup
-  BACKUP_RESPONSE=$(curl -s -X POST \
-    -H "Authorization: Bearer $HA_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"name": "automated_nas_backup"}' \
-    "$HA_URL/api/hassio/backups/new/full")
+  # Trigger backup via WebSocket API
+  BACKUP_RESPONSE=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws backup/generate \
+    '{"agent_ids":["hassio.local"],"include_all_addons":true,"include_database":true,"include_homeassistant":true,"name":"automated_nas_backup"}' 2>&1) || true
 
-  BACKUP_SLUG=$(echo "$BACKUP_RESPONSE" | jq -r '.data.slug // empty')
+  BACKUP_JOB_ID=$(echo "$BACKUP_RESPONSE" | jq -r '.backup_job_id // empty' 2>/dev/null)
 
-  if [ -z "$BACKUP_SLUG" ]; then
-    logger -t "$LOG_TAG" "ERROR: Failed to create backup."
+  if [ -z "$BACKUP_JOB_ID" ]; then
+    logger -t "$INSTANCE_TAG" "ERROR: Failed to trigger backup. Response: $BACKUP_RESPONSE"
     continue
   fi
 
-  # Wait for completion
+  logger -t "$INSTANCE_TAG" "Backup triggered (job: $BACKUP_JOB_ID). Waiting for completion..."
+
+  # Wait for backup completion (poll backup/info every 10s, max 10 min)
+  BACKUP_ID=""
   for i in $(seq 1 60); do
-    STATUS=$(curl -s -H "Authorization: Bearer $HA_TOKEN" \
-      "$HA_URL/api/hassio/backups/$BACKUP_SLUG/info" | jq -r '.data.type // empty')
-    if [ -n "$STATUS" ]; then
+    sleep 10
+    BACKUP_INFO=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws backup/info 2>/dev/null) || continue
+    BACKUP_STATE=$(echo "$BACKUP_INFO" | jq -r '.state // empty' 2>/dev/null)
+
+    if [ "$BACKUP_STATE" = "idle" ]; then
+      # Backup complete – find the newest backup
+      BACKUP_ID=$(echo "$BACKUP_INFO" | jq -r '.backups | sort_by(.date) | reverse | .[0].backup_id // empty' 2>/dev/null)
       break
     fi
-    sleep 5
   done
 
-  # Download to temporary file first
+  if [ -z "$BACKUP_ID" ]; then
+    logger -t "$INSTANCE_TAG" "ERROR: Backup did not complete within timeout."
+    continue
+  fi
+
+  logger -t "$INSTANCE_TAG" "Backup complete (ID: $BACKUP_ID). Downloading..."
+
+  # Download backup via Supervisor API (REST works for download with auth token)
   TMP_FILE="$BACKUP_DIR/.ha_backup_downloading.tar"
 
   DOWNLOAD_HTTP=$(curl -s -o "$TMP_FILE" -w "%{http_code}" \
     -H "Authorization: Bearer $HA_TOKEN" \
-    "$HA_URL/api/hassio/backups/$BACKUP_SLUG/download")
+    "$HA_URL/api/hassio/backups/$BACKUP_ID/download")
+
+  # If REST proxy blocks the download, try direct Supervisor download
+  if [ "$DOWNLOAD_HTTP" != "200" ]; then
+    logger -t "$INSTANCE_TAG" "REST download failed (HTTP $DOWNLOAD_HTTP). Trying Supervisor API..."
+    DOWNLOAD_RESP=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" GET "/backups/$BACKUP_ID/download" 2>&1) || true
+    # The supervisor/api websocket can't stream binary; use slug-based download
+    # Try the hassio ingress download endpoint
+    DOWNLOAD_HTTP=$(curl -s -o "$TMP_FILE" -w "%{http_code}" \
+      -H "Authorization: Bearer $HA_TOKEN" \
+      -H "X-Hassio-Key: $HA_TOKEN" \
+      "$HA_URL/api/hassio/backups/$BACKUP_ID/download")
+  fi
 
   # Validate: HTTP status
   if [ "$DOWNLOAD_HTTP" != "200" ]; then
-    logger -t "$LOG_TAG" "ERROR: Download failed (HTTP $DOWNLOAD_HTTP). Keeping previous backups."
+    logger -t "$INSTANCE_TAG" "ERROR: Download failed (HTTP $DOWNLOAD_HTTP). Keeping previous backups."
     rm -f "$TMP_FILE"
     continue
   fi
 
   # Validate: file exists and has content
   if [ ! -s "$TMP_FILE" ]; then
-    logger -t "$LOG_TAG" "ERROR: Downloaded file is empty. Keeping previous backups."
+    logger -t "$INSTANCE_TAG" "ERROR: Downloaded file is empty. Keeping previous backups."
     rm -f "$TMP_FILE"
     continue
   fi
@@ -117,20 +151,19 @@ for instance in "${HA_INSTANCES[@]}"; do
   # Validate: minimum size
   FILE_SIZE=$(stat -c%s "$TMP_FILE" 2>/dev/null || stat -f%z "$TMP_FILE" 2>/dev/null || echo "0")
   if [ "$FILE_SIZE" -lt "$MIN_BACKUP_SIZE" ]; then
-    logger -t "$LOG_TAG" "ERROR: Backup too small (${FILE_SIZE} bytes, min ${MIN_BACKUP_SIZE}). Keeping previous backups."
+    logger -t "$INSTANCE_TAG" "ERROR: Backup too small (${FILE_SIZE} bytes, min ${MIN_BACKUP_SIZE}). Keeping previous backups."
     rm -f "$TMP_FILE"
     continue
   fi
 
   # Validate: valid tar archive
   if ! tar -tf "$TMP_FILE" > /dev/null 2>&1; then
-    logger -t "$LOG_TAG" "ERROR: Downloaded file is not a valid tar archive. Keeping previous backups."
+    logger -t "$INSTANCE_TAG" "ERROR: Downloaded file is not a valid tar archive. Keeping previous backups."
     rm -f "$TMP_FILE"
     continue
   fi
 
   # All checks passed – rotate numbered backups
-  #    Delete oldest, shift N-1 → N, ..., 1 → 2, 0 → 1, new → 0
   rm -f "${BACKUP_PREFIX}.$((KEEP_COUNT - 1)).tar"
 
   for (( i = KEEP_COUNT - 2; i >= 0; i-- )); do
@@ -141,13 +174,20 @@ for instance in "${HA_INSTANCES[@]}"; do
 
   mv -f "$TMP_FILE" "${BACKUP_PREFIX}.0.tar"
 
-  # Cleanup old backups inside HA
-  ALL_SLUGS=$(curl -s -H "Authorization: Bearer $HA_TOKEN" \
-    "$HA_URL/api/hassio/backups" | jq -r '.data.backups | sort_by(.date) | reverse | .['"$KEEP_COUNT"':] | .[].slug')
+  # Cleanup old backups inside HA (keep KEEP_COUNT)
+  ALL_BACKUP_IDS=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws backup/info 2>/dev/null | \
+    jq -r "[.backups | sort_by(.date) | reverse | .[$KEEP_COUNT:][] | .backup_id] | .[]" 2>/dev/null) || true
 
-  for OLD_SLUG in $ALL_SLUGS; do
-     curl -s -X DELETE -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/hassio/backups/$OLD_SLUG"
+  for OLD_ID in $ALL_BACKUP_IDS; do
+    python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws backup/delete "{\"backup_id\":\"$OLD_ID\"}" 2>/dev/null || true
   done
 
-  logger -t "$LOG_TAG" "Backup completed (${FILE_SIZE} bytes) -> ${BACKUP_PREFIX}.0.tar"
+  # Metadata
+  echo "backup_date=$(date -Iseconds)" > "$BACKUP_DIR/backup_meta.txt"
+  echo "backup_id=${BACKUP_ID}" >> "$BACKUP_DIR/backup_meta.txt"
+  echo "hostname=${NAME}" >> "$BACKUP_DIR/backup_meta.txt"
+  echo "file_size=${FILE_SIZE}" >> "$BACKUP_DIR/backup_meta.txt"
+  echo "keep_count=${KEEP_COUNT}" >> "$BACKUP_DIR/backup_meta.txt"
+
+  logger -t "$INSTANCE_TAG" "Backup completed (${FILE_SIZE} bytes) -> ${BACKUP_PREFIX}.0.tar"
 done
