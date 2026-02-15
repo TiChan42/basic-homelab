@@ -45,6 +45,11 @@
     - item in ha_tokens
     - ha_ip_change_needed | default(false) | bool
   no_log: true
+  register: ip_change_result
+  # The IP change takes effect immediately, dropping the WebSocket
+  # connection and causing a non-zero exit code – this is expected.
+  # The next task verifies the new IP is reachable.
+  failed_when: false
 
 - name: Wait for HA to become available on static IP
   uri:
