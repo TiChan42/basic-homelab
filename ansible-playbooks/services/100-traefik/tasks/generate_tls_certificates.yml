@@ -1,0 +1,181 @@
+---
+# tasks/generate_tls_certificates.yml – Self-signed Root CA + Wildcard Certificate
+#
+# Creates a private Root CA and a wildcard TLS certificate for *.{{ traefik_base_domain }}.
+# The CA is backed up to NAS and restored automatically after container rebuilds,
+# so clients only need to trust the CA once.
+#
+# Flow:
+#   1. Check local → try NAS restore → generate new CA if missing
+#   2. Check wildcard cert → generate if missing (signed by CA)
+#   3. Fetch CA to controller (for NAS backup in Play 3)
+
+# ── Prerequisites ─────────────────────────────────────────
+
+- name: Install openssl
+  apt:
+    name: openssl
+    state: present
+
+- name: Create TLS certificate directory
+  file:
+    path: "{{ traefik_tls_cert_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+# ── 1. Root CA (restore from NAS or generate new) ────────
+
+- name: Check if Root CA exists locally
+  stat:
+    path: "{{ traefik_tls_cert_dir }}/ca.crt"
+  register: local_ca
+
+- name: Check NAS for existing CA backup
+  delegate_to: localhost
+  stat:
+    path: "{{ nas_backup_mount }}/traefik/ca.crt"
+  register: nas_ca
+
+- name: Restore Root CA from NAS (preserves client trust after rebuild)
+  block:
+    - name: Restore CA certificate from NAS
+      copy:
+        src: "{{ nas_backup_mount }}/traefik/ca.crt"
+        dest: "{{ traefik_tls_cert_dir }}/ca.crt"
+        mode: '0644'
+
+    - name: Restore CA private key from NAS
+      copy:
+        src: "{{ nas_backup_mount }}/traefik/ca.key"
+        dest: "{{ traefik_tls_cert_dir }}/ca.key"
+        mode: '0600'
+  when:
+    - not local_ca.stat.exists
+    - nas_ca.stat.exists
+
+- name: Re-check CA after potential restore
+  stat:
+    path: "{{ traefik_tls_cert_dir }}/ca.crt"
+  register: ca_present
+
+- name: Generate new Root CA (first-time setup)
+  block:
+    - name: Generate CA private key (4096 bit RSA)
+      command: openssl genrsa -out {{ traefik_tls_cert_dir }}/ca.key 4096
+
+    - name: Generate self-signed CA certificate ({{ traefik_ca_validity_days }} days)
+      command: >-
+        openssl req -x509 -new -nodes
+        -key {{ traefik_tls_cert_dir }}/ca.key
+        -sha256 -days {{ traefik_ca_validity_days }}
+        -out {{ traefik_tls_cert_dir }}/ca.crt
+        -subj "{{ traefik_ca_subject }}"
+  when: not ca_present.stat.exists
+
+# ── 2. Wildcard Certificate ──────────────────────────────
+
+- name: Check if wildcard certificate exists
+  stat:
+    path: "{{ traefik_tls_cert_dir }}/wildcard.crt"
+  register: wildcard_present
+
+- name: Generate wildcard certificate for *.{{ traefik_base_domain }}
+  block:
+    - name: Generate wildcard private key (2048 bit RSA)
+      command: openssl genrsa -out {{ traefik_tls_cert_dir }}/wildcard.key 2048
+
+    - name: Deploy OpenSSL SAN extension config
+      copy:
+        content: |
+          [req]
+          distinguished_name = req_dn
+          req_extensions = v3_req
+          prompt = no
+
+          [req_dn]
+          CN = *.{{ traefik_base_domain }}
+
+          [v3_req]
+          subjectAltName = @alt_names
+          basicConstraints = CA:FALSE
+          keyUsage = digitalSignature, keyEncipherment
+          extendedKeyUsage = serverAuth
+
+          [alt_names]
+          DNS.1 = *.{{ traefik_base_domain }}
+          DNS.2 = {{ traefik_base_domain }}
+        dest: "{{ traefik_tls_cert_dir }}/wildcard.cnf"
+        mode: '0644'
+
+    - name: Generate wildcard CSR
+      command: >-
+        openssl req -new
+        -key {{ traefik_tls_cert_dir }}/wildcard.key
+        -out {{ traefik_tls_cert_dir }}/wildcard.csr
+        -config {{ traefik_tls_cert_dir }}/wildcard.cnf
+
+    - name: Sign wildcard certificate with Root CA ({{ traefik_cert_validity_days }} days)
+      command: >-
+        openssl x509 -req
+        -in {{ traefik_tls_cert_dir }}/wildcard.csr
+        -CA {{ traefik_tls_cert_dir }}/ca.crt
+        -CAkey {{ traefik_tls_cert_dir }}/ca.key
+        -CAcreateserial
+        -out {{ traefik_tls_cert_dir }}/wildcard.crt
+        -days {{ traefik_cert_validity_days }}
+        -sha256
+        -extensions v3_req
+        -extfile {{ traefik_tls_cert_dir }}/wildcard.cnf
+  when: not wildcard_present.stat.exists
+  notify: Restart traefik service
+
+# ── 3. Permissions ────────────────────────────────────────
+
+- name: Set secure permissions on private keys
+  file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: '0600'
+  loop:
+    - "{{ traefik_tls_cert_dir }}/ca.key"
+    - "{{ traefik_tls_cert_dir }}/wildcard.key"
+
+- name: Set read permissions on certificates
+  file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - "{{ traefik_tls_cert_dir }}/ca.crt"
+    - "{{ traefik_tls_cert_dir }}/wildcard.crt"
+
+# ── 4. Fetch CA to controller (for NAS backup in Play 3) ─
+
+- name: Fetch CA certificate to Ansible controller
+  fetch:
+    src: "{{ traefik_tls_cert_dir }}/ca.crt"
+    dest: /tmp/homelab-ca.crt
+    flat: yes
+
+- name: Fetch CA private key to Ansible controller
+  fetch:
+    src: "{{ traefik_tls_cert_dir }}/ca.key"
+    dest: /tmp/homelab-ca.key
+    flat: yes
+
+# ── 5. Status ─────────────────────────────────────────────
+
+- name: Read wildcard certificate details
+  command: >-
+    openssl x509 -in {{ traefik_tls_cert_dir }}/wildcard.crt
+    -subject -issuer -dates -ext subjectAltName -noout
+  register: cert_info
+  changed_when: false
+
+- name: Show TLS certificate status
+  debug:
+    msg: "{{ cert_info.stdout_lines }}"

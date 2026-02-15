@@ -56,6 +56,10 @@
     - name: Include Traefik installation tasks
       include_tasks: tasks/install_traefik.yml
 
+    - name: Include TLS certificate generation
+      include_tasks: tasks/generate_tls_certificates.yml
+      when: traefik_https_enabled | default(true) | bool
+
     - name: Include Traefik configuration tasks
       include_tasks: tasks/configure_traefik.yml
 
@@ -68,3 +72,69 @@
         name: traefik
         state: restarted
         daemon_reload: yes
+
+# ============================================================
+# PLAY 3 – Backup CA certificate to NAS for persistence
+# ============================================================
+- name: Backup Homelab CA Certificate to NAS
+  hosts: localhost
+  become: yes
+  tags: [deploy]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    - name: Check if CA certificate was fetched
+      stat:
+        path: /tmp/homelab-ca.crt
+      register: tmp_ca
+
+    - name: Backup CA to NAS and show trust instructions
+      when: tmp_ca.stat.exists
+      block:
+        - name: Create Traefik directory on NAS
+          file:
+            path: "{{ nas_backup_mount }}/traefik"
+            state: directory
+            mode: '0755'
+
+        - name: Backup CA certificate to NAS
+          copy:
+            src: /tmp/homelab-ca.crt
+            dest: "{{ nas_backup_mount }}/traefik/ca.crt"
+            mode: '0644'
+
+        - name: Backup CA private key to NAS
+          copy:
+            src: /tmp/homelab-ca.key
+            dest: "{{ nas_backup_mount }}/traefik/ca.key"
+            mode: '0600'
+
+        - name: Clean up temporary files
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/homelab-ca.crt
+            - /tmp/homelab-ca.key
+
+        - name: Display CA trust instructions
+          debug:
+            msg: |
+              ════════════════════════════════════════════════════
+              Homelab Root CA backed up to {{ nas_backup_mount }}/traefik/ca.crt
+
+              To trust on macOS:
+                scp root@<proxmox-ip>:{{ nas_backup_mount }}/traefik/ca.crt ~/Downloads/homelab-ca.crt
+                sudo security add-trusted-cert -d -r trustRoot \
+                  -k /Library/Keychains/System.keychain ~/Downloads/homelab-ca.crt
+
+              To trust on iOS:
+                1. Transfer ca.crt to device (AirDrop/email)
+                2. Settings → General → VPN & Device Mgmt → Install
+                3. Settings → General → About → Certificate Trust → Enable
+
+              To trust on Linux:
+                sudo cp ca.crt /usr/local/share/ca-certificates/homelab-ca.crt
+                sudo update-ca-certificates
+              ════════════════════════════════════════════════════

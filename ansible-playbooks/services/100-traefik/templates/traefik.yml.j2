@@ -40,17 +40,6 @@ providers:
     directory: /etc/traefik/dynamic
     watch: true
 
-{% if traefik_acme_enabled | default(false) | bool %}
-# --- Certificate Resolvers (Let's Encrypt) ---
-certificatesResolvers:
-  letsencrypt:
-    acme:
-      email: "{{ traefik_acme_email }}"
-      storage: /etc/traefik/acme/acme.json
-      httpChallenge:
-        entryPoint: web
-{% endif %}
-
 # --- Logging ---
 log:
   level: "{{ traefik_log_level | default('INFO') }}"

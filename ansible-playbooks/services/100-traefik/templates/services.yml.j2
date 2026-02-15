@@ -34,12 +34,7 @@ http:
       service: api@internal
       middlewares:
         - dashboard-auth
-{% if traefik_acme_enabled | default(false) | bool %}
-      tls:
-        certResolver: letsencrypt
-{% else %}
       tls: {}
-{% endif %}
 
 {% endif %}
 {% for host in groups['all'] | default([]) %}
@@ -67,12 +62,7 @@ http:
       entryPoints:
         - websecure
       service: {{ host }}
-{% if traefik_acme_enabled | default(false) | bool %}
-      tls:
-        certResolver: letsencrypt
-{% else %}
       tls: {}
-{% endif %}
 
     {{ host }}-http:
       rule: "{{ host_rule }}"
@@ -94,11 +84,17 @@ http:
 {% endif %}
 {% endfor %}
 
-{% if not (traefik_https_enabled | default(true) | bool) %}
-# TLS disabled – using self-signed or no TLS
-{% else %}
+{% if traefik_https_enabled | default(true) | bool %}
 # --- TLS Configuration ---
 tls:
+  certificates:
+    - certFile: {{ traefik_tls_cert_dir }}/wildcard.crt
+      keyFile: {{ traefik_tls_cert_dir }}/wildcard.key
+  stores:
+    default:
+      defaultCertificate:
+        certFile: {{ traefik_tls_cert_dir }}/wildcard.crt
+        keyFile: {{ traefik_tls_cert_dir }}/wildcard.key
   options:
     default:
       minVersion: VersionTLS12
