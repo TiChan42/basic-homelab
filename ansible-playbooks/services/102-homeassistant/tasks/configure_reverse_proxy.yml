@@ -33,9 +33,8 @@
 
 - name: Add http trusted_proxies to configuration.yaml
   shell: |
-    _b64=$(printf '\n# Reverse proxy (Traefik) – managed by Ansible\nhttp:\n  use_x_forwarded_for: true\n  trusted_proxies:\n    - {{ hostvars[groups['traefik'][0]]['ansible_host'] }}\n' | base64 -w 0)
-    qm guest exec {{ hostvars[item]['service_id'] }} --timeout 60 \
-      --input-data "$_b64" -- \
+    printf '\n# Reverse proxy (Traefik) – managed by Ansible\nhttp:\n  use_x_forwarded_for: true\n  trusted_proxies:\n    - {{ hostvars[groups['traefik'][0]]['ansible_host'] }}\n' | \
+    qm guest exec {{ hostvars[item]['service_id'] }} --pass-stdin 1 --timeout 60 -- \
       /bin/sh -c 'cat >> /mnt/data/supervisor/homeassistant/configuration.yaml'
   loop: "{{ groups['homeassistant'] }}"
   when:
