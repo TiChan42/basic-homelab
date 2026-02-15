@@ -125,15 +125,6 @@
     # ----------------------------------------------------------------
     # Make Proxmox host use its own dnsmasq for DNS
     # ----------------------------------------------------------------
-    - name: Configure Proxmox host to use local dnsmasq
-      copy:
-        dest: /etc/resolv.conf.dnsmasq
-        mode: '0644'
-        content: |
-          # Managed by Ansible – local dnsmasq resolver
-          nameserver 127.0.0.1
-          nameserver {{ network_dns | default(network_gateway) }}
-
     - name: Point /etc/resolv.conf to local dnsmasq
       copy:
         dest: /etc/resolv.conf
@@ -142,6 +133,7 @@
           # Managed by Ansible – local dnsmasq resolver
           nameserver 127.0.0.1
           nameserver {{ network_dns | default(network_gateway) }}
+      notify: Restart dnsmasq
 
     # ----------------------------------------------------------------
     # Ensure dnsmasq is enabled and started
@@ -151,6 +143,10 @@
         name: dnsmasq
         enabled: yes
         state: started
+
+    # Flush handlers now so dnsmasq is restarted before verification
+    - name: Flush handlers to apply config changes
+      meta: flush_handlers
 
     # ----------------------------------------------------------------
     # Verify DNS resolution
