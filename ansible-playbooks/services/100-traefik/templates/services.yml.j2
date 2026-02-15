@@ -88,12 +88,12 @@ http:
 # --- TLS Configuration ---
 tls:
   certificates:
-    - certFile: {{ traefik_tls_cert_dir }}/wildcard.crt
+    - certFile: {{ traefik_tls_cert_dir }}/fullchain.pem
       keyFile: {{ traefik_tls_cert_dir }}/wildcard.key
   stores:
     default:
       defaultCertificate:
-        certFile: {{ traefik_tls_cert_dir }}/wildcard.crt
+        certFile: {{ traefik_tls_cert_dir }}/fullchain.pem
         keyFile: {{ traefik_tls_cert_dir }}/wildcard.key
   options:
     default:

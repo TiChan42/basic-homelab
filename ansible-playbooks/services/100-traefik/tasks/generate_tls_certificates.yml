@@ -131,7 +131,23 @@
   when: not wildcard_present.stat.exists
   notify: Restart traefik service
 
-# ── 3. Permissions ────────────────────────────────────────
+# ── 3. Fullchain (wildcard + CA) for browsers ────────────
+
+- name: Assemble fullchain certificate (wildcard + CA)
+  assemble:
+    src: "{{ traefik_tls_cert_dir }}"
+    dest: "{{ traefik_tls_cert_dir }}/fullchain.pem"
+    regexp: '(wildcard\.crt|ca\.crt)$'
+    mode: '0644'
+  notify: Restart traefik service
+
+- name: Ensure correct chain order (server cert first, then CA)
+  shell: |
+    cat {{ traefik_tls_cert_dir }}/wildcard.crt {{ traefik_tls_cert_dir }}/ca.crt \
+      > {{ traefik_tls_cert_dir }}/fullchain.pem
+  changed_when: false
+
+# ── 4. Permissions ────────────────────────────────────────
 
 - name: Set secure permissions on private keys
   file:
@@ -152,8 +168,9 @@
   loop:
     - "{{ traefik_tls_cert_dir }}/ca.crt"
     - "{{ traefik_tls_cert_dir }}/wildcard.crt"
+    - "{{ traefik_tls_cert_dir }}/fullchain.pem"
 
-# ── 4. Fetch CA to controller (for NAS backup in Play 3) ─
+# ── 5. Fetch CA to controller (for NAS backup in Play 3) ─
 
 - name: Fetch CA certificate to Ansible controller
   fetch:
@@ -167,7 +184,7 @@
     dest: /tmp/homelab-ca.key
     flat: yes
 
-# ── 5. Status ─────────────────────────────────────────────
+# ── 6. Status ─────────────────────────────────────────────
 
 - name: Read wildcard certificate details
   command: >-
