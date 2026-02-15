@@ -47,10 +47,11 @@ http:
 {% if svc_traefik.get('enabled', false) | bool and svc_traefik.get('domain', '') | length > 0 %}
 {% set api_domain = svc_traefik.get('api_domain', '') %}
 {% set ws_domain = svc_traefik.get('ws_domain', '') %}
-{% set all_domains = [svc_traefik['domain']] %}
-{% if api_domain | length > 0 %}{% set _ = all_domains.append(api_domain) %}{% endif %}
-{% if ws_domain | length > 0 %}{% set _ = all_domains.append(ws_domain) %}{% endif %}
-{% set host_rule = all_domains | map('regex_replace', '^(.*)$', 'Host(`\1`)') | join(' || ') %}
+{% set rules = [] %}
+{% set _ = rules.append("Host(`" ~ svc_traefik['domain'] ~ "`)") %}
+{% if api_domain | length > 0 %}{% set _ = rules.append("Host(`" ~ api_domain ~ "`)") %}{% endif %}
+{% if ws_domain | length > 0 %}{% set _ = rules.append("Host(`" ~ ws_domain ~ "`)") %}{% endif %}
+{% set host_rule = rules | join(' || ') %}
     # ------------------------------------------------------------------
     # {{ host }} – {{ hostvars[host]['ansible_host'] | default('unknown') }}
     #   frontend: {{ svc_traefik['domain'] }}
