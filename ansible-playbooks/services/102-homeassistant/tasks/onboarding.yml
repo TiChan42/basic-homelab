@@ -80,7 +80,6 @@
   register: login_flow
   when:
     - item not in (ha_auth_codes | default({}))
-    - onboarding_status.results | selectattr('item', 'equalto', item) | map(attribute='status') | first == 404
   loop: "{{ groups['homeassistant'] }}"
 
 - name: Submit credentials to login flow
