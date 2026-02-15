@@ -53,6 +53,29 @@
   loop_control:
     label: "{{ item }} (VMID {{ hostvars[item]['service_id'] }})"
 
+# ------------------------------------------------------------------
+# NAS bind mount (host /mnt/nas → container /mnt/nas)
+# ------------------------------------------------------------------
+- name: Ensure NAS bind mount is configured on MQTT container
+  shell: |
+    VMID={{ hostvars[item]['service_id'] }}
+    if pct config $VMID | grep -q "^mp0:"; then
+      echo "OK"
+    else
+      pct set $VMID -mp0 {{ nas_mount }},mp={{ nas_mount }}
+      # If container is already running, stop it so mount takes effect on next start
+      if pct status $VMID 2>/dev/null | grep -q "running"; then
+        pct stop $VMID --timeout 30
+        sleep 2
+      fi
+      echo "CONFIGURED"
+    fi
+  register: nas_mount_config
+  changed_when: "'CONFIGURED' in nas_mount_config.stdout"
+  loop: "{{ groups['mqtt_brokers'] }}"
+  loop_control:
+    label: "{{ item }}"
+
 - name: Ensure MQTT container is running
   community.proxmox.proxmox:
     api_host: "{{ proxmox_api_host }}"
