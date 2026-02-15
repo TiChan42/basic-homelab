@@ -1,8 +1,10 @@
 ---
-# tasks/restore_backup.yml – NAS-Backup prüfen & wiederherstellen (nur bei leerem Datenverzeichnis)
+# tasks/restore_backup.yml – NAS-Backup prüfen & wiederherstellen
 #
 # Läuft im Container (hosts: mqtt_brokers).
-# Idempotent: Wird übersprungen, wenn lokale Daten bereits vorhanden sind.
+# Idempotent: Wird übersprungen, wenn MQTT bereits konfiguriert ist.
+# Indikator: Passwortdatei existiert nur nach configure_mosquitto.yml,
+# NICHT nach bloßer Paketinstallation (mosquitto.db wird von APT-Autostart erzeugt).
 
 - name: Ensure MQTT backup directory on NAS exists
   file:
@@ -10,19 +12,17 @@
     state: directory
     mode: '0777'
 
-- name: Check if local Mosquitto data directory exists and has content
-  find:
-    paths: "{{ mqtt_data_dir }}"
-    file_type: any
-  register: local_data_check
-  ignore_errors: true
+- name: Check if MQTT was previously configured (password file as indicator)
+  stat:
+    path: "{{ mqtt_password_file }}"
+  register: mqtt_configured
 
 - name: Find available NAS backup archives (numbered, 0 = newest)
   stat:
     path: "{{ nas_backup_mount }}/mqtt-broker/mqtt_backup.{{ item }}.tar.gz"
   register: nas_backup_candidates
   loop: "{{ range(0, mqtt_backup_keep_count) | list }}"
-  when: (local_data_check.matched | default(0)) == 0
+  when: not mqtt_configured.stat.exists
 
 - name: Set best available backup to restore from
   set_fact:
@@ -31,7 +31,16 @@
           | selectattr('stat.exists', 'defined')
           | selectattr('stat.exists')
           | first).stat.path | default('') }}
-  when: (local_data_check.matched | default(0)) == 0
+  when: not mqtt_configured.stat.exists
+
+- name: Stop Mosquitto before restore
+  systemd:
+    name: mosquitto
+    state: stopped
+  when:
+    - not mqtt_configured.stat.exists
+    - mqtt_restore_archive | default('') | length > 0
+  ignore_errors: true
 
 - name: Restore Mosquitto data from NAS backup archive
   unarchive:
@@ -39,7 +48,7 @@
     dest: /
     remote_src: yes
   when:
-    - (local_data_check.matched | default(0)) == 0
+    - not mqtt_configured.stat.exists
     - mqtt_restore_archive | default('') | length > 0
 
 - name: Fix ownership after restore
