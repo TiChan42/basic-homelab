@@ -1,0 +1,55 @@
+# ============================================
+# Traefik Static Configuration – managed by Ansible
+# ============================================
+
+# --- Global settings ---
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# --- Entrypoints ---
+entryPoints:
+  web:
+    address: ":{{ service_backend_port }}"
+{% if traefik_https_enabled | default(true) | bool %}
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+{% endif %}
+  websecure:
+    address: ":{{ traefik_https_port }}"
+  traefik:
+    address: ":{{ traefik_dashboard_port }}"
+
+# --- API / Dashboard ---
+api:
+  dashboard: {{ traefik_dashboard_enabled | default(true) | lower }}
+  insecure: {{ traefik_dashboard_insecure | default(true) | lower }}
+
+ping:
+  entryPoint: traefik
+
+# --- Providers ---
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+{% if traefik_acme_enabled | default(false) | bool %}
+# --- Certificate Resolvers (Let's Encrypt) ---
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "{{ traefik_acme_email }}"
+      storage: /etc/traefik/acme/acme.json
+      httpChallenge:
+        entryPoint: web
+{% endif %}
+
+# --- Logging ---
+log:
+  level: "{{ traefik_log_level | default('INFO') }}"
+
+accessLog: {}

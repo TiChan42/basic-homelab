@@ -1,0 +1,51 @@
+---
+# tasks/setup_backup.yml – Backup/Restore-Scripts, Cron-Job & Systemd-Service
+#
+# Läuft im Container (hosts: n8n).
+
+# ------------------------------------------------------------------
+# Scripts deployen
+# ------------------------------------------------------------------
+- name: Deploy n8n backup script
+  template:
+    src: templates/n8n_backup.sh.j2
+    dest: "{{ n8n_backup_script_path }}"
+    mode: '0750'
+    owner: root
+    group: root
+
+- name: Deploy restore-on-boot script
+  template:
+    src: templates/n8n_restore.sh.j2
+    dest: "{{ n8n_restore_script_path }}"
+    mode: '0750'
+    owner: root
+    group: root
+
+# ------------------------------------------------------------------
+# Systemd restore-on-boot Service
+# ------------------------------------------------------------------
+- name: Create systemd service for restore-on-boot
+  template:
+    src: templates/n8n-restore.service.j2
+    dest: /etc/systemd/system/n8n-restore.service
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Enable restore-on-boot service
+  systemd:
+    name: n8n-restore
+    enabled: yes
+    daemon_reload: yes
+
+# ------------------------------------------------------------------
+# Cron – periodisches Backup
+# ------------------------------------------------------------------
+- name: Set up periodic n8n backup via cron
+  cron:
+    name: "n8n backup to NAS"
+    minute: "{{ n8n_backup_cron_minute }}"
+    hour: "{{ n8n_backup_cron_hour }}"
+    job: "{{ n8n_backup_script_path }} 2>&1 | logger -t n8n-backup-cron"
+    user: root
+    state: present

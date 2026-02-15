@@ -1,0 +1,61 @@
+# ============================================
+# Traefik Dynamic Configuration – managed by Ansible
+# Service routing for all homelab web applications
+#
+# Routes are auto-generated from the Ansible inventory.
+# Any host with  service_traefik.enabled: true  gets a route.
+# Required host_vars:  service_name, service_backend_port, ansible_host
+#   service_traefik: { enabled: true, domain: "..." }
+# Optional host_vars:  traefik_scheme (default: http)
+# ============================================
+
+http:
+  routers:
+{% for host in groups['all'] | default([]) %}
+{% set svc_traefik = hostvars[host].get('service_traefik', {}) %}
+{% if svc_traefik.get('enabled', false) | bool and svc_traefik.get('domain', '') | length > 0 %}
+    # ------------------------------------------------------------------
+    # {{ host }} – {{ hostvars[host]['ansible_host'] | default('unknown') }}
+    # ------------------------------------------------------------------
+    {{ host }}:
+      rule: "Host(`{{ svc_traefik['domain'] }}`)"
+      entryPoints:
+        - websecure
+      service: {{ host }}
+{% if traefik_acme_enabled | default(false) | bool %}
+      tls:
+        certResolver: letsencrypt
+{% else %}
+      tls: {}
+{% endif %}
+
+    {{ host }}-http:
+      rule: "Host(`{{ svc_traefik['domain'] }}`)"
+      entryPoints:
+        - web
+      service: {{ host }}
+
+{% endif %}
+{% endfor %}
+
+  services:
+{% for host in groups['all'] | default([]) %}
+{% set svc_traefik = hostvars[host].get('service_traefik', {}) %}
+{% if svc_traefik.get('enabled', false) | bool and svc_traefik.get('domain', '') | length > 0 %}
+    {{ host }}:
+      loadBalancer:
+        servers:
+          - url: "{{ hostvars[host]['traefik_scheme'] | default('http') }}://{{ hostvars[host]['ansible_host'] }}:{{ hostvars[host]['service_backend_port'] }}"
+{% endif %}
+{% endfor %}
+
+{% if not (traefik_https_enabled | default(true) | bool) %}
+# TLS disabled – using self-signed or no TLS
+{% else %}
+# --- TLS Configuration ---
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: true
+{% endif %}

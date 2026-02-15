@@ -1,0 +1,41 @@
+---
+# tasks/verify_service.yml – Verify Traefik is running and responding
+
+- name: Wait for Traefik HTTP entrypoint
+  wait_for:
+    port: "{{ service_backend_port }}"
+    timeout: 30
+    delay: 3
+
+- name: Wait for Traefik HTTPS entrypoint
+  wait_for:
+    port: "{{ traefik_https_port }}"
+    timeout: 30
+    delay: 3
+
+- name: Wait for Traefik dashboard
+  wait_for:
+    port: "{{ traefik_dashboard_port }}"
+    timeout: 30
+    delay: 3
+  when: traefik_dashboard_enabled | default(true) | bool
+
+- name: Check Traefik health endpoint
+  uri:
+    url: "http://127.0.0.1:{{ traefik_dashboard_port }}/ping"
+    method: GET
+    status_code: [200]
+    timeout: 10
+  register: traefik_health
+  retries: 5
+  delay: 5
+  until: traefik_health.status == 200
+  when: traefik_dashboard_enabled | default(true) | bool
+
+- name: Show Traefik status
+  debug:
+    msg: >-
+      Traefik is running!
+      HTTP: :{{ service_backend_port }},
+      HTTPS: :{{ traefik_https_port }},
+      Dashboard: :{{ traefik_dashboard_port }}

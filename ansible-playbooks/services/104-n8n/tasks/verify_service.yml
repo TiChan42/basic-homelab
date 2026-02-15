@@ -1,0 +1,25 @@
+---
+# tasks/verify_service.yml – n8n starten, Port prüfen & Status anzeigen
+#
+# Läuft im Container (hosts: n8n).
+
+- name: Start and enable n8n
+  systemd:
+    name: n8n
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Verify n8n is listening
+  wait_for:
+    port: "{{ service_backend_port }}"
+    timeout: 30
+
+- name: Show n8n status
+  command: systemctl status n8n --no-pager -l
+  register: n8n_status
+  changed_when: false
+
+- name: Print n8n status
+  debug:
+    msg: "{{ n8n_status.stdout_lines }}"

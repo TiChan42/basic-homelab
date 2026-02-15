@@ -1,0 +1,59 @@
+// ============================================
+// Node-RED Settings – managed by Ansible
+// ============================================
+module.exports = {
+    // --- Flow storage ---
+    flowFile: 'flows.json',
+    flowFilePretty: true,
+
+    // --- User directory ---
+    userDir: '{{ nodered_data_dir }}',
+
+    // --- Credential encryption ---
+    credentialSecret: '{{ nodered_credential_secret }}',
+
+    // --- Network ---
+    uiPort: {{ service_backend_port }},
+    uiHost: "0.0.0.0",
+
+    // --- Diagnostics ---
+    diagnostics: {
+        enabled: true,
+        ui: true,
+    },
+
+    // --- Logging ---
+    logging: {
+        console: {
+            level: "info",
+            metrics: false,
+            audit: false
+        }
+    },
+
+    // --- Persistent context storage (survives restarts) ---
+    contextStorage: {
+        default: {
+            module: "localfilesystem",
+            config: {
+                dir: "{{ nodered_data_dir }}/context"
+            }
+        }
+    },
+
+    exportGlobalContextKeys: false,
+
+    // --- Editor ---
+    editorTheme: {
+        projects: {
+            enabled: false
+        },
+        tours: false,
+    },
+
+    // --- Function nodes ---
+    functionGlobalContext: {
+    },
+
+    functionExternalModules: true,
+}

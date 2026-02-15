@@ -1,0 +1,51 @@
+---
+# tasks/setup_backup.yml – Backup/Restore-Scripts, Cron-Job & Systemd-Service
+#
+# Läuft im Container (hosts: nodered).
+
+# ------------------------------------------------------------------
+# Scripts deployen
+# ------------------------------------------------------------------
+- name: Deploy Node-RED backup script
+  template:
+    src: templates/nodered_backup.sh.j2
+    dest: "{{ nodered_backup_script_path }}"
+    mode: '0750'
+    owner: root
+    group: root
+
+- name: Deploy restore-on-boot script
+  template:
+    src: templates/nodered_restore.sh.j2
+    dest: "{{ nodered_restore_script_path }}"
+    mode: '0750'
+    owner: root
+    group: root
+
+# ------------------------------------------------------------------
+# Systemd restore-on-boot Service
+# ------------------------------------------------------------------
+- name: Create systemd service for restore-on-boot
+  template:
+    src: templates/nodered-restore.service.j2
+    dest: /etc/systemd/system/nodered-restore.service
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Enable restore-on-boot service
+  systemd:
+    name: nodered-restore
+    enabled: yes
+    daemon_reload: yes
+
+# ------------------------------------------------------------------
+# Cron – periodisches Backup
+# ------------------------------------------------------------------
+- name: Set up periodic Node-RED backup via cron
+  cron:
+    name: "Node-RED backup to NAS"
+    minute: "{{ nodered_backup_cron_minute }}"
+    hour: "{{ nodered_backup_cron_hour }}"
+    job: "{{ nodered_backup_script_path }} 2>&1 | logger -t nodered-backup-cron"
+    user: root
+    state: present

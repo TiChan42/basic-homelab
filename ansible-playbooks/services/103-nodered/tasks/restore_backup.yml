@@ -1,0 +1,52 @@
+---
+# tasks/restore_backup.yml – NAS-Backup prüfen & wiederherstellen (nur bei fehlendem flows.json)
+#
+# Läuft im Container (hosts: nodered).
+# Idempotent: Wird übersprungen, wenn lokale Daten bereits vorhanden sind.
+
+- name: Ensure Node-RED backup directory on NAS exists
+  file:
+    path: "{{ nas_backup_mount }}/nodered"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Check if local Node-RED flows exist
+  stat:
+    path: "{{ nodered_data_dir }}/flows.json"
+  register: nodered_flows_file
+
+- name: Find available NAS backup archives (numbered, 0 = newest)
+  stat:
+    path: "{{ nas_backup_mount }}/nodered/nodered_backup.{{ item }}.tar.gz"
+  register: nas_backup_candidates
+  loop: "{{ range(0, nodered_backup_keep_count) | list }}"
+  when: not nodered_flows_file.stat.exists
+
+- name: Set best available backup to restore from
+  set_fact:
+    nodered_restore_archive: >-
+      {{ (nas_backup_candidates.results | default([])
+          | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists')
+          | first).stat.path | default('') }}
+  when: not nodered_flows_file.stat.exists
+
+- name: Restore Node-RED data from NAS backup archive
+  unarchive:
+    src: "{{ nodered_restore_archive }}"
+    dest: /
+    remote_src: yes
+  when:
+    - not nodered_flows_file.stat.exists
+    - nodered_restore_archive | default('') | length > 0
+
+- name: Reinstall npm modules after restore (node_modules excluded from backup)
+  shell: cd {{ nodered_data_dir }} && npm install
+  args:
+    chdir: "{{ nodered_data_dir }}"
+  when:
+    - not nodered_flows_file.stat.exists
+    - nodered_restore_archive | default('') | length > 0
+  ignore_errors: true

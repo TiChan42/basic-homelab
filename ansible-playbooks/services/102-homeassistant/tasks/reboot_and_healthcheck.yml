@@ -13,7 +13,7 @@
   when: not (ha_reboot_needed | default(false) | bool)
 
 - name: Reboot Home Assistant VM
-  command: "qm reboot {{ hostvars[item]['ha_vm_id'] }}"
+  command: "qm reboot {{ hostvars[item]['service_id'] }}"
   changed_when: true
   loop: "{{ groups['homeassistant'] }}"
   when: ha_reboot_needed | default(false) | bool

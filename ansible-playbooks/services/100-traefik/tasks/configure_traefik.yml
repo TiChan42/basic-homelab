@@ -1,0 +1,36 @@
+---
+# tasks/configure_traefik.yml – Deploy Traefik configuration files & systemd service
+
+- name: Deploy Traefik static configuration
+  template:
+    src: templates/traefik.yml.j2
+    dest: /etc/traefik/traefik.yml
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart traefik service
+
+- name: Deploy Traefik dynamic configuration (services routing)
+  template:
+    src: templates/services.yml.j2
+    dest: /etc/traefik/dynamic/services.yml
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart traefik service
+
+- name: Deploy Traefik systemd service
+  template:
+    src: templates/traefik.service.j2
+    dest: /etc/systemd/system/traefik.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart traefik service
+
+- name: Start and enable Traefik service
+  systemd:
+    name: traefik
+    enabled: yes
+    state: started
+    daemon_reload: yes

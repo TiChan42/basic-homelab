@@ -1,0 +1,89 @@
+---
+# ==============================================================================
+# Playbook: Services - n8n Workflow Automation
+# Description: Provisions a Proxmox LXC container and deploys n8n with
+#              pre-configured MQTT and Home Assistant connections, plus
+#              automated NAS backup/restore.
+#
+# Structure:
+#   main.yml                          ← Orchestrator (this file)
+#   tasks/
+#     provision_container.yml         ← LXC erstellen, starten, DNS, Port-Forwarding
+#     configure_networking.yml        ← Statische IP via Netplan
+#     install_n8n.yml                 ← Node.js + n8n installieren
+#     restore_backup.yml              ← NAS-Backup prüfen & wiederherstellen
+#     configure_n8n.yml               ← Environment, systemd Service
+#     setup_backup.yml                ← Backup/Restore-Scripts, Cron, Systemd
+#     verify_service.yml              ← n8n starten, Port prüfen, Status
+#   templates/
+#     netplan.yaml.j2                 ← Statische Netzwerk-Konfiguration
+#     n8n.service.j2                  ← Systemd Service Unit
+#     n8n.env.j2                      ← n8n Environment-Konfiguration
+#     n8n_backup.sh.j2                ← Backup-Script
+#     n8n_restore.sh.j2               ← Restore-Script
+#     n8n-restore.service.j2          ← Systemd restore-on-boot
+#
+# Inter-Service Connections (via environment variables):
+#   → MQTT Broker (Mosquitto) on {{ n8n_mqtt_broker_ip }}:{{ n8n_mqtt_port }}
+#   → Home Assistant on {{ n8n_ha_url }} (via REST API / Webhooks)
+#
+# Inventory Requirements (per host in 'n8n' group):
+#   - service_id                      (unique Proxmox VMID)
+#   - service_name                    (canonical name, e.g. "n8n")
+#   - ansible_host                    (static IP for the container)
+# ==============================================================================
+
+# ============================================================
+# PLAY 1 – Provision the LXC container on the Proxmox host
+# ============================================================
+- name: Provision Proxmox Container for n8n
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  tags: [provision]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    - name: Provision & configure n8n container
+      include_tasks: tasks/provision_container.yml
+
+# ============================================================
+# PLAY 2 – Deploy & configure n8n inside the container
+# ============================================================
+- name: Deploy n8n Workflow Automation
+  hosts: n8n
+  become: yes
+  gather_facts: yes
+  tags: [deploy]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    - name: Configure static networking
+      include_tasks: tasks/configure_networking.yml
+
+    - name: Install n8n
+      include_tasks: tasks/install_n8n.yml
+
+    - name: Restore backup from NAS (if needed)
+      include_tasks: tasks/restore_backup.yml
+
+    - name: Configure n8n (environment, service)
+      include_tasks: tasks/configure_n8n.yml
+
+    - name: Setup backup & restore infrastructure
+      include_tasks: tasks/setup_backup.yml
+
+    - name: Start & verify n8n service
+      include_tasks: tasks/verify_service.yml
+
+  handlers:
+    - name: Restart n8n
+      systemd:
+        name: n8n
+        state: restarted
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes

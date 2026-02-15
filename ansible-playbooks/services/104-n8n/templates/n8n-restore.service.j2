@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore n8n data from NAS backup
+After=network-online.target remote-fs.target
+Before=n8n.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ n8n_restore_script_path }}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

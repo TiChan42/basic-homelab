@@ -1,0 +1,89 @@
+---
+# ==============================================================================
+# Playbook: Services - Node-RED IoT Flow Engine
+# Description: Provisions a Proxmox LXC container and deploys Node-RED with
+#              pre-configured MQTT and Home Assistant connections, plus
+#              automated NAS backup/restore.
+#
+# Structure:
+#   main.yml                          ← Orchestrator (this file)
+#   tasks/
+#     provision_container.yml         ← LXC erstellen, starten, DNS, Port-Forwarding
+#     configure_networking.yml        ← Statische IP via Netplan
+#     install_nodered.yml             ← Node.js + Node-RED + Extra-Nodes installieren
+#     restore_backup.yml              ← NAS-Backup prüfen & wiederherstellen
+#     configure_nodered.yml           ← settings.js, Default-Flows, systemd Service
+#     setup_backup.yml                ← Backup/Restore-Scripts, Cron, Systemd
+#     verify_service.yml              ← Node-RED starten, Port prüfen, Status
+#   templates/
+#     netplan.yaml.j2                 ← Statische Netzwerk-Konfiguration
+#     settings.js.j2                  ← Node-RED settings.js
+#     nodered.service.j2              ← Systemd Service Unit
+#     nodered_backup.sh.j2            ← Backup-Script
+#     nodered_restore.sh.j2           ← Restore-Script
+#     nodered-restore.service.j2      ← Systemd restore-on-boot
+#
+# Inter-Service Connections (pre-configured):
+#   → MQTT Broker (Mosquitto) on {{ nodered_mqtt_broker_ip }}:{{ nodered_mqtt_port }}
+#   → Home Assistant on {{ nodered_ha_url }} (via WebSocket node)
+#
+# Inventory Requirements (per host in 'nodered' group):
+#   - service_id                      (unique Proxmox VMID)
+#   - service_name                    (canonical name, e.g. "nodered")
+#   - ansible_host                    (static IP for the container)
+# ==============================================================================
+
+# ============================================================
+# PLAY 1 – Provision the LXC container on the Proxmox host
+# ============================================================
+- name: Provision Proxmox Container for Node-RED
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  tags: [provision]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    - name: Provision & configure Node-RED container
+      include_tasks: tasks/provision_container.yml
+
+# ============================================================
+# PLAY 2 – Deploy & configure Node-RED inside the container
+# ============================================================
+- name: Deploy Node-RED IoT Flow Engine
+  hosts: nodered
+  become: yes
+  gather_facts: yes
+  tags: [deploy]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    - name: Configure static networking
+      include_tasks: tasks/configure_networking.yml
+
+    - name: Install Node-RED and extra nodes
+      include_tasks: tasks/install_nodered.yml
+
+    - name: Restore backup from NAS (if needed)
+      include_tasks: tasks/restore_backup.yml
+
+    - name: Configure Node-RED (settings, flows, service)
+      include_tasks: tasks/configure_nodered.yml
+
+    - name: Setup backup & restore infrastructure
+      include_tasks: tasks/setup_backup.yml
+
+    - name: Start & verify Node-RED service
+      include_tasks: tasks/verify_service.yml
+
+  handlers:
+    - name: Restart Node-RED
+      systemd:
+        name: nodered
+        state: restarted
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes

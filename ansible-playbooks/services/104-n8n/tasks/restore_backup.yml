@@ -1,0 +1,43 @@
+---
+# tasks/restore_backup.yml – NAS-Backup prüfen & wiederherstellen (nur bei fehlender Datenbank)
+#
+# Läuft im Container (hosts: n8n).
+# Idempotent: Wird übersprungen, wenn lokale Daten bereits vorhanden sind.
+
+- name: Ensure n8n backup directory on NAS exists
+  file:
+    path: "{{ nas_backup_mount }}/n8n"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Check if local n8n database exists
+  stat:
+    path: "{{ n8n_data_dir }}/database.sqlite"
+  register: n8n_db_file
+
+- name: Find available NAS backup archives (numbered, 0 = newest)
+  stat:
+    path: "{{ nas_backup_mount }}/n8n/n8n_backup.{{ item }}.tar.gz"
+  register: nas_backup_candidates
+  loop: "{{ range(0, n8n_backup_keep_count) | list }}"
+  when: not n8n_db_file.stat.exists
+
+- name: Set best available backup to restore from
+  set_fact:
+    n8n_restore_archive: >-
+      {{ (nas_backup_candidates.results | default([])
+          | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists')
+          | first).stat.path | default('') }}
+  when: not n8n_db_file.stat.exists
+
+- name: Restore n8n data from NAS backup archive
+  unarchive:
+    src: "{{ n8n_restore_archive }}"
+    dest: /
+    remote_src: yes
+  when:
+    - not n8n_db_file.stat.exists
+    - n8n_restore_archive | default('') | length > 0

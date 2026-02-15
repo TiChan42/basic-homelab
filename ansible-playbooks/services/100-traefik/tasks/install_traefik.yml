@@ -1,0 +1,59 @@
+---
+# tasks/install_traefik.yml – Download and install Traefik binary
+
+- name: Install required system packages
+  apt:
+    name:
+      - curl
+      - tar
+    state: present
+    update_cache: yes
+
+- name: Check if Traefik is already installed
+  stat:
+    path: /usr/local/bin/traefik
+  register: traefik_binary
+
+- name: Download Traefik binary
+  get_url:
+    url: "https://github.com/traefik/traefik/releases/download/{{ traefik_version }}/traefik_{{ traefik_version }}_linux_amd64.tar.gz"
+    dest: /tmp/traefik.tar.gz
+    mode: '0644'
+  when: not traefik_binary.stat.exists
+
+- name: Extract Traefik binary
+  unarchive:
+    src: /tmp/traefik.tar.gz
+    dest: /usr/local/bin/
+    remote_src: yes
+    extra_opts: ['traefik']
+    mode: '0755'
+  when: not traefik_binary.stat.exists
+
+- name: Set executable permissions
+  file:
+    path: /usr/local/bin/traefik
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Clean up download
+  file:
+    path: /tmp/traefik.tar.gz
+    state: absent
+
+- name: Allow Traefik to bind privileged ports (80, 443)
+  command: setcap 'cap_net_bind_service=+ep' /usr/local/bin/traefik
+  changed_when: false
+
+- name: Create Traefik config directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - /etc/traefik
+    - /etc/traefik/dynamic
+    - /etc/traefik/acme

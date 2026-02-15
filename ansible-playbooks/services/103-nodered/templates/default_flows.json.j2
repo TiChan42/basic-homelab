@@ -1,0 +1,80 @@
+[
+    {
+        "id": "ansible-mqtt-broker",
+        "type": "mqtt-broker",
+        "name": "Homelab MQTT Broker",
+        "broker": "{{ nodered_mqtt_broker_ip }}",
+        "port": "{{ nodered_mqtt_port }}",
+        "clientid": "nodered-{{ inventory_hostname }}",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "homelab/nodered/status",
+        "birthQos": "1",
+        "birthRetain": "true",
+        "birthPayload": "online",
+        "birthMsg": {},
+        "closeTopic": "homelab/nodered/status",
+        "closeQos": "1",
+        "closeRetain": "true",
+        "closePayload": "offline",
+        "closeMsg": {},
+        "willTopic": "homelab/nodered/status",
+        "willQos": "1",
+        "willRetain": "true",
+        "willPayload": "offline",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": "",
+        "credentials": {
+            "user": "{{ nodered_mqtt_user }}",
+            "password": "{{ nodered_mqtt_password }}"
+        }
+    },
+{% if nodered_ha_url is defined %}
+    {
+        "id": "ansible-ha-server",
+        "type": "server",
+        "name": "Home Assistant",
+        "version": 5,
+        "addon": false,
+        "rejectUnauthorizedCerts": false,
+        "ha_boolean": "y,yes,true,1,on",
+        "connectionDelay": true,
+        "cacheJson": true,
+        "heartbeat": false,
+        "heartbeatInterval": "30",
+        "areaSelector": "friendlyName",
+        "deviceSelector": "friendlyName",
+        "entitySelector": "friendlyName",
+        "statusSeparator": ": ",
+        "statusYear": "hidden",
+        "statusMonth": "short",
+        "statusDay": "numeric",
+        "statusHourCycle": "h23",
+        "statusTimeFormat": "h:m",
+        "enableGlobalContextStore": true
+    },
+{% endif %}
+    {
+        "id": "ansible-info-tab",
+        "type": "tab",
+        "label": "Homelab Info",
+        "disabled": false,
+        "info": "## Homelab Node-RED\n\nVorkonfiguriert von Ansible.\n\n### Verbindungen\n- **MQTT Broker**: {{ nodered_mqtt_broker_ip }}:{{ nodered_mqtt_port }}\n- **Home Assistant**: {{ nodered_ha_url }}\n\n### Hinweis\nErstelle deine Flows in neuen Tabs.\nDieser Info-Tab kann gelöscht werden.",
+        "env": []
+    },
+    {
+        "id": "ansible-info-comment",
+        "type": "comment",
+        "z": "ansible-info-tab",
+        "name": "✅ MQTT & HA vorkonfiguriert – erstelle neue Tabs für deine Flows",
+        "info": "Der MQTT-Broker und Home Assistant sind als Config-Nodes vorhanden.\nWähle sie beim Erstellen neuer MQTT- oder HA-Nodes aus.",
+        "x": 420,
+        "y": 80,
+        "wires": []
+    }
+]

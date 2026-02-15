@@ -108,13 +108,13 @@
 # ------------------------------------------------------------------
 - name: Exchange auth code for tokens
   uri:
-    url: "http://{{ ha_initial_ips[item] }}:8123/auth/token"
+    url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/auth/token"
     method: POST
     body_format: form-urlencoded
     body:
       grant_type: authorization_code
       code: "{{ ha_auth_codes[item] }}"
-      client_id: "http://{{ ha_initial_ips[item] }}:8123/"
+      client_id: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/"
     status_code: [200]
     timeout: 30
   register: auth_response
@@ -149,7 +149,7 @@
 # ------------------------------------------------------------------
 - name: Check remaining onboarding steps
   uri:
-    url: "http://{{ ha_initial_ips[item] }}:8123/api/onboarding"
+    url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/onboarding"
     method: GET
     status_code: [200]
     timeout: 10
@@ -160,7 +160,7 @@
 
 - name: Complete core_config onboarding step
   uri:
-    url: "http://{{ ha_initial_ips[item.item] }}:8123/api/onboarding/core_config"
+    url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/api/onboarding/core_config"
     method: POST
     headers:
       Authorization: "Bearer {{ ha_tokens[item.item] }}"
@@ -179,7 +179,7 @@
 
 - name: Complete analytics onboarding step
   uri:
-    url: "http://{{ ha_initial_ips[item.item] }}:8123/api/onboarding/analytics"
+    url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/api/onboarding/analytics"
     method: POST
     headers:
       Authorization: "Bearer {{ ha_tokens[item.item] }}"
@@ -198,14 +198,14 @@
 
 - name: Complete integration onboarding step
   uri:
-    url: "http://{{ ha_initial_ips[item.item] }}:8123/api/onboarding/integration"
+    url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/api/onboarding/integration"
     method: POST
     headers:
       Authorization: "Bearer {{ ha_tokens[item.item] }}"
     body_format: json
     body:
-      client_id: "http://{{ ha_initial_ips[item.item] }}:8123/"
-      redirect_uri: "http://{{ ha_initial_ips[item.item] }}:8123/"
+      client_id: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/"
+      redirect_uri: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/"
     status_code: [200]
     timeout: 30
   when:

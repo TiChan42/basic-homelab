@@ -1,0 +1,13 @@
+# Netplan static IP – managed by Ansible (Traefik)
+network:
+  version: 2
+  ethernets:
+    eth0:
+      addresses:
+        - {{ ansible_host }}{{ network_cidr }}
+      routes:
+        - to: default
+          via: {{ network_gateway }}
+      nameservers:
+        addresses:
+          - {{ network_dns }}

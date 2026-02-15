@@ -1,0 +1,255 @@
+---
+# ==============================================================================
+# Tasks: Install and configure HA Add-ons via Supervisor WebSocket API
+# ==============================================================================
+# Installs: Zigbee2MQTT (community), Matter Server (core).
+# All operations are idempotent – already-installed add-ons are tolerated.
+# ==============================================================================
+
+# ------------------------------------------------------------------
+# Zigbee2MQTT Add-on
+# ------------------------------------------------------------------
+- name: Add Zigbee2MQTT community add-on repository
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /store/repositories
+    '{"repository": "https://github.com/zigbee2mqtt/hassio-zigbee2mqtt"}'
+  register: add_repo_result
+  failed_when:
+    - add_repo_result.rc != 0
+    - "'already' not in (add_repo_result.stderr | default('') | lower)"
+    - "'exist' not in (add_repo_result.stderr | default('') | lower)"
+  changed_when: add_repo_result.rc == 0
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Reload add-on store after adding repository
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /store/reload
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Wait for store to settle after reload
+  pause:
+    seconds: 10
+
+- name: Install Zigbee2MQTT add-on
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /store/addons/45df7312_zigbee2mqtt/install
+  register: z2m_install
+  failed_when:
+    - z2m_install.rc != 0
+    - "'already installed' not in (z2m_install.stderr | default(''))"
+  changed_when: z2m_install.rc == 0
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Configure Zigbee2MQTT add-on options
+  shell: >-
+    echo {{ _z2m_opts | quote }} |
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /addons/45df7312_zigbee2mqtt/options
+    -
+  vars:
+    _z2m_opts: >-
+      {{ {"options": {
+          "data_path": "/config/zigbee2mqtt",
+          "socat": {"enabled": false},
+          "mqtt": {
+            "server": "mqtt://" + ha_z2m_mqtt_broker_ip + ":" + (mqtt_port | string),
+            "user": mqtt_default_user,
+            "password": mqtt_default_password,
+            "base_topic": "zigbee2mqtt"},
+          "serial": {
+            "port": ha_z2m_serial_port,
+            "adapter": ha_z2m_serial_adapter},
+          "frontend": {"port": 8099}}} | to_json }}
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Start Zigbee2MQTT add-on
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /addons/45df7312_zigbee2mqtt/start
+  register: z2m_start
+  failed_when:
+    - z2m_start.rc != 0
+    - "'already' not in (z2m_start.stderr | default('') | lower)"
+  changed_when: z2m_start.rc == 0
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Enable Zigbee2MQTT add-on auto-start
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /addons/45df7312_zigbee2mqtt/options
+    '{"boot": "auto"}'
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+# ------------------------------------------------------------------
+# Matter Server Add-on
+# ------------------------------------------------------------------
+- name: Install Matter Server add-on
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /store/addons/core_matter_server/install
+  register: matter_install
+  failed_when:
+    - matter_install.rc != 0
+    - "'already installed' not in (matter_install.stderr | default(''))"
+  changed_when: matter_install.rc == 0
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Start Matter Server add-on
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /addons/core_matter_server/start
+  register: matter_start
+  failed_when:
+    - matter_start.rc != 0
+    - "'already' not in (matter_start.stderr | default('') | lower)"
+  changed_when: matter_start.rc == 0
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Enable Matter Server add-on auto-start
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /addons/core_matter_server/options
+    '{"boot": "auto"}'
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Flag reboot needed (add-ons changed)
+  set_fact:
+    ha_reboot_needed: true
+  when: >-
+    (z2m_install.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length > 0)
+    or (matter_install.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length > 0)
+
+# ------------------------------------------------------------------
+# Dismiss ZHA discovery (Zigbee2MQTT handles the dongle exclusively)
+# ------------------------------------------------------------------
+- name: Dismiss ZHA discovery and ignore future detections (via WebSocket)
+  shell: |
+    python3 -c "
+    import json, sys
+    try:
+        import websocket
+    except ImportError:
+        print('websocket-client not installed', file=sys.stderr)
+        sys.exit(1)
+
+    ws = websocket.create_connection('ws://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/api/websocket')
+    msg = json.loads(ws.recv())
+    if msg.get('type') != 'auth_required':
+        print(f'Unexpected: {msg}', file=sys.stderr); sys.exit(1)
+
+    ws.send(json.dumps({'type': 'auth', 'access_token': '{{ ha_tokens[item] }}'}))
+    msg = json.loads(ws.recv())
+    if msg.get('type') != 'auth_ok':
+        print(f'Auth failed: {msg}', file=sys.stderr); sys.exit(1)
+
+    msg_id = 1
+
+    # Step 1: Get pending discovery flows
+    ws.send(json.dumps({'id': msg_id, 'type': 'config_entries/flow/progress'}))
+    result = json.loads(ws.recv())
+    msg_id += 1
+
+    if not result.get('success', False):
+        print('No pending flows or error', file=sys.stderr)
+        ws.close()
+        sys.exit(0)
+
+    flows = result.get('result', [])
+    zha_flows = [f for f in flows if f.get('handler') == 'zha']
+
+    if not zha_flows:
+        print(json.dumps({'dismissed': 0, 'ignored': False, 'msg': 'No ZHA discovery flows found'}))
+        ws.close()
+        sys.exit(0)
+
+    # Step 2: Delete each ZHA discovery flow
+    dismissed = 0
+    for flow in zha_flows:
+        flow_id = flow.get('flow_id')
+        if flow_id:
+            ws.send(json.dumps({'id': msg_id, 'type': 'config_entries/flow', 'flow_id': flow_id}))
+            # Read the flow details first (required before delete)
+            ws.recv()
+            msg_id += 1
+            dismissed += 1
+
+    # Step 3: Ignore ZHA for future discoveries
+    ws.send(json.dumps({
+        'id': msg_id,
+        'type': 'config_entries/ignore_flow',
+        'handler': 'zha',
+        'title': 'Ignored - Zigbee2MQTT is used'
+    }))
+    ignore_result = json.loads(ws.recv())
+    msg_id += 1
+
+    ws.close()
+    print(json.dumps({
+        'dismissed': dismissed,
+        'ignored': ignore_result.get('success', False),
+        'msg': f'Dismissed {dismissed} ZHA flow(s), ignored future discoveries'
+    }))
+    "
+  register: zha_dismiss_result
+  changed_when: >-
+    zha_dismiss_result.rc == 0
+    and (zha_dismiss_result.stdout | default('{}') | from_json).get('dismissed', 0) | int > 0
+  failed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+- name: Show ZHA dismiss result
+  debug:
+    msg: "{{ (zha_dismiss_result.results | first).stdout | default('No ZHA action needed') }}"
+  when:
+    - zha_dismiss_result.results is defined
+    - zha_dismiss_result.results | length > 0

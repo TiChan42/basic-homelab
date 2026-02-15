@@ -1,0 +1,70 @@
+---
+# ==============================================================================
+# Playbook: Services - Traefik Reverse Proxy
+# Description: Provisions a Proxmox LXC container running Traefik as the
+#              central reverse proxy for all homelab web services.
+#              Handles HTTP (80) → HTTPS (443) redirection, automatic
+#              Let's Encrypt certificates (or self-signed), and DNS-based
+#              routing to backend services.
+#
+# Process:
+# 1. Proxmox Container Provisioning (localhost):
+#    - Creates the Traefik LXC container.
+#    - Sets up port forwarding for ports 80, 443, and the Traefik dashboard.
+#
+# 2. Traefik Deployment (Container):
+#    - Configures static networking (Netplan).
+#    - Installs Traefik from the official binary.
+#    - Deploys static config (traefik.yml) and dynamic config (services.yml).
+#    - Configures and starts the systemd service.
+#
+# Inventory Requirements (in 'traefik' group):
+#   - service_id                    (unique Proxmox VMID)
+#   - service_name                  (canonical name, e.g. "traefik")
+#   - ansible_host                  (static IP for the container)
+# ==============================================================================
+
+# ============================================================
+# PLAY 1 – Provision the Traefik LXC on the Proxmox host
+# ============================================================
+- name: Provision Traefik Reverse Proxy Container
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  tags: [provision]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    - name: Include provisioning tasks
+      include_tasks: tasks/provision_container.yml
+
+# ============================================================
+# PLAY 2 – Configure and deploy Traefik
+# ============================================================
+- name: Deploy Traefik Reverse Proxy
+  hosts: traefik
+  become: yes
+  tags: [deploy]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    - name: Include networking tasks
+      include_tasks: tasks/configure_networking.yml
+
+    - name: Include Traefik installation tasks
+      include_tasks: tasks/install_traefik.yml
+
+    - name: Include Traefik configuration tasks
+      include_tasks: tasks/configure_traefik.yml
+
+    - name: Include service verification tasks
+      include_tasks: tasks/verify_service.yml
+
+  handlers:
+    - name: Restart traefik service
+      systemd:
+        name: traefik
+        state: restarted
+        daemon_reload: yes

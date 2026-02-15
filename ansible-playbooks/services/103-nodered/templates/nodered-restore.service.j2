@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore Node-RED data from NAS backup
+After=network-online.target remote-fs.target
+Before=nodered.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ nodered_restore_script_path }}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

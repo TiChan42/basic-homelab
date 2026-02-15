@@ -1,0 +1,144 @@
+---
+# ==============================================================================
+# Playbook: Services - Home Assistant OS (VM)
+# Description: Provisions a Proxmox KVM virtual machine running Home Assistant
+#              Operating System with USB passthrough, Zigbee2MQTT, Matter, and
+#              automated NAS backup/restore.
+#
+# Process:
+# 1. Proxmox VM Provisioning (localhost):
+#    - Downloads the HAOS qcow2 image.
+#    - Creates a UEFI-based KVM VM (q35 machine type).
+#    - Imports the disk image and configures boot.
+#    - Passes through USB devices (e.g. Sonoff Zigbee dongle).
+#    - Starts VM and waits for HA API to become available.
+#
+# 2. Home Assistant Configuration (localhost → HA API):
+#    - Completes onboarding (creates admin user).
+#    - Configures static IP via Supervisor Network API.
+#    - Installs Add-ons: Zigbee2MQTT, Matter Server.
+#    - Configures Zigbee2MQTT to use the external Mosquitto broker.
+#    - Configures MQTT integration in HA.
+#
+# 3. Backup Concept (localhost cron → HA API → NAS):
+#    - A cron job on the Proxmox host triggers HA backups via the API.
+#    - The backup file is downloaded and stored on the NAS mount.
+#    - Numbered rotation with validation before promotion.
+#
+# Architecture Note – USB Passthrough:
+#   The Sonoff Zigbee USB dongle is passed through to the HA VM,
+#   NOT to the MQTT broker container. The data flow is:
+#     Zigbee Dongle (USB) → Zigbee2MQTT (HA Add-on) → Mosquitto (LXC)
+#   Mosquitto only receives MQTT messages and does not need USB access.
+#
+# Inventory Requirements (in 'homeassistant' group):
+#   - service_id            (unique Proxmox VMID)
+#   - service_name          (canonical name, e.g. "ha")
+#   - ansible_host          (static IP for HA)
+#   - service_backend_port  (HA API port, defined per host)
+# ==============================================================================
+
+# ============================================================
+# PLAY 1 – Provision the HAOS VM on the Proxmox host
+# ============================================================
+- name: Provision Home Assistant OS VM
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  tags: [provision]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+  vars:
+    # Convenience aliases – these plays run on localhost so host_vars
+    # for the HA/MQTT hosts are only reachable via hostvars.
+    ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
+    mqtt_port: "{{ hostvars[groups['mqtt_brokers'][0]]['service_backend_port'] | default('1883') }}"
+
+  tasks:
+    # --- Prerequisites ---
+    - name: Ensure required packages are installed
+      apt:
+        name:
+          - python3-proxmoxer
+          - python3-websocket
+          - wget
+          - xz-utils
+          - jq
+          - curl
+        state: present
+        update_cache: yes
+
+    # --- VM provisioning ---
+    - name: Provision HAOS VM
+      include_tasks: tasks/provision_vm.yml
+
+    # --- USB passthrough ---
+    - name: Configure USB passthrough
+      include_tasks: tasks/usb_passthrough.yml
+
+    # --- Detect IP & wait for API ---
+    - name: Detect VM IP and wait for HA API
+      include_tasks: tasks/detect_and_wait.yml
+
+
+# ============================================================
+# PLAY 2 – Configure Home Assistant via API
+# ============================================================
+- name: Configure Home Assistant
+  hosts: localhost
+  become: yes
+  gather_facts: no
+  tags: [configure]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+  vars:
+    ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
+    mqtt_port: "{{ hostvars[groups['mqtt_brokers'][0]]['service_backend_port'] | default('1883') }}"
+
+  tasks:
+    # --- Initialize change tracking ---
+    - name: Initialize reboot tracking flag
+      set_fact:
+        ha_reboot_needed: false
+
+    # --- Onboarding & authentication ---
+    - name: Complete onboarding and authenticate
+      include_tasks: tasks/onboarding.yml
+
+    # --- Core config (country, timezone) & OS updates ---
+    - name: Configure core settings and apply updates
+      include_tasks: tasks/configure_core_and_updates.yml
+
+    # --- Static IP configuration ---
+    - name: Configure static IP address
+      include_tasks: tasks/configure_network.yml
+
+    # --- Add-on installation ---
+    - name: Install and configure add-ons
+      include_tasks: tasks/install_addons.yml
+
+    # --- MQTT integration ---
+    - name: Configure MQTT integration
+      include_tasks: tasks/configure_mqtt.yml
+
+    # --- Reboot & Health Check ---
+    - name: Reboot and verify Home Assistant
+      include_tasks: tasks/reboot_and_healthcheck.yml
+
+
+# ============================================================
+# PLAY 3 – Set up backup to NAS (runs on Proxmox host)
+# ============================================================
+- name: Setup Home Assistant Backup to NAS
+  hosts: localhost
+  become: yes
+  gather_facts: no
+  tags: [backup]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+  vars:
+    ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
+
+  tasks:
+    - name: Setup backup to NAS
+      include_tasks: tasks/setup_backup.yml

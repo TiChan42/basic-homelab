@@ -1,0 +1,14 @@
+[Unit]
+Description=n8n Workflow Automation
+After=network.target n8n-restore.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/n8n.env
+ExecStart=/usr/bin/n8n start
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

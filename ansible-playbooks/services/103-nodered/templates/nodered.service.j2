@@ -1,0 +1,14 @@
+[Unit]
+Description=Node-RED IoT Flow Engine
+After=network.target nodered-restore.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/node-red --userDir {{ nodered_data_dir }} --settings {{ nodered_data_dir }}/settings.js
+Restart=always
+RestartSec=10
+Environment="NODE_OPTIONS=--max_old_space_size=384"
+
+[Install]
+WantedBy=multi-user.target

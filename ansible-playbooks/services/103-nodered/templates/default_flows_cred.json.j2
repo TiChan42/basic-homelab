@@ -1,0 +1,10 @@
+{
+    "ansible-mqtt-broker": {
+        "user": "{{ nodered_mqtt_user }}",
+        "password": "{{ nodered_mqtt_password }}"
+    }{% if nodered_ha_url is defined %},
+    "ansible-ha-server": {
+        "access_token": "{{ nodered_ha_token | default('') }}"
+    }{% endif %}
+
+}

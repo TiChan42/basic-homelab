@@ -1,0 +1,95 @@
+#!/bin/bash
+# ============================================
+# n8n Backup Script – managed by Ansible
+# Creates a validated tar.gz archive of n8n
+# data on NAS with numbered rotation (0 = newest).
+# Exports workflows/credentials via CLI before
+# archiving for maximum consistency.
+# ============================================
+set -euo pipefail
+
+BACKUP_DIR="{{ nas_backup_mount }}/n8n"
+DATA_DIR="{{ n8n_data_dir }}"
+ENV_FILE="/etc/n8n.env"
+LOG_TAG="n8n-backup"
+MIN_BACKUP_SIZE={{ n8n_backup_min_size }}
+KEEP_COUNT={{ n8n_backup_keep_count }}
+
+TMP_FILE="$BACKUP_DIR/.n8n_backup_creating.tar.gz"
+BACKUP_PREFIX="$BACKUP_DIR/n8n_backup"
+
+logger -t "$LOG_TAG" "Starting n8n backup..."
+
+# 1. Check NFS mount is available
+if ! mountpoint -q "{{ nas_mount }}"; then
+  logger -t "$LOG_TAG" "ERROR: NAS mount not available at {{ nas_mount }}"
+  exit 1
+fi
+
+mkdir -p "$BACKUP_DIR"
+
+# 2. Export workflows and credentials via n8n CLI (ensures consistent state)
+export $(grep -v '^#' "$ENV_FILE" | xargs 2>/dev/null) 2>/dev/null || true
+mkdir -p "$DATA_DIR/workflow_export" "$DATA_DIR/credential_export"
+n8n export:workflow --all --output="$DATA_DIR/workflow_export/" 2>/dev/null || true
+n8n export:credentials --all --output="$DATA_DIR/credential_export/" 2>/dev/null || true
+
+# 3. Create tar.gz archive to temporary file
+ARCHIVE_CONTENTS=()
+
+if [ -d "$DATA_DIR" ]; then
+  ARCHIVE_CONTENTS+=("$DATA_DIR")
+fi
+
+if [ -f "$ENV_FILE" ]; then
+  ARCHIVE_CONTENTS+=("$ENV_FILE")
+fi
+
+if [ {% raw %}${#ARCHIVE_CONTENTS[@]}{% endraw %} -eq 0 ]; then
+  logger -t "$LOG_TAG" "ERROR: No files to backup."
+  exit 1
+fi
+
+tar -czf "$TMP_FILE" "${ARCHIVE_CONTENTS[@]}" 2>/dev/null
+
+# 4. Validate: file exists and has content
+if [ ! -s "$TMP_FILE" ]; then
+  logger -t "$LOG_TAG" "ERROR: Created archive is empty. Keeping previous backups."
+  rm -f "$TMP_FILE"
+  exit 1
+fi
+
+# 5. Validate: minimum size
+FILE_SIZE=$(stat -c%s "$TMP_FILE" 2>/dev/null || stat -f%z "$TMP_FILE" 2>/dev/null || echo "0")
+if [ "$FILE_SIZE" -lt "$MIN_BACKUP_SIZE" ]; then
+  logger -t "$LOG_TAG" "ERROR: Backup too small (${FILE_SIZE} bytes, min ${MIN_BACKUP_SIZE}). Keeping previous backups."
+  rm -f "$TMP_FILE"
+  exit 1
+fi
+
+# 6. Validate: valid tar.gz archive
+if ! tar -tzf "$TMP_FILE" > /dev/null 2>&1; then
+  logger -t "$LOG_TAG" "ERROR: Created file is not a valid tar.gz archive. Keeping previous backups."
+  rm -f "$TMP_FILE"
+  exit 1
+fi
+
+# 7. All checks passed – rotate numbered backups
+#    Delete oldest, shift N-1 → N, ..., 1 → 2, 0 → 1, new → 0
+rm -f "${BACKUP_PREFIX}.$((KEEP_COUNT - 1)).tar.gz"
+
+for (( i = KEEP_COUNT - 2; i >= 0; i-- )); do
+  if [ -f "${BACKUP_PREFIX}.${i}.tar.gz" ]; then
+    mv -f "${BACKUP_PREFIX}.${i}.tar.gz" "${BACKUP_PREFIX}.$((i + 1)).tar.gz"
+  fi
+done
+
+mv -f "$TMP_FILE" "${BACKUP_PREFIX}.0.tar.gz"
+
+# 8. Metadata
+echo "backup_date=$(date -Iseconds)" > "$BACKUP_DIR/backup_meta.txt"
+echo "hostname=$(hostname)" >> "$BACKUP_DIR/backup_meta.txt"
+echo "file_size=${FILE_SIZE}" >> "$BACKUP_DIR/backup_meta.txt"
+echo "keep_count=${KEEP_COUNT}" >> "$BACKUP_DIR/backup_meta.txt"
+
+logger -t "$LOG_TAG" "n8n backup completed successfully (${FILE_SIZE} bytes) -> ${BACKUP_PREFIX}.0.tar.gz"

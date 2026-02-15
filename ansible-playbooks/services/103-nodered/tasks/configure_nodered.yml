@@ -1,0 +1,55 @@
+---
+# tasks/configure_nodered.yml – settings.js, Default-Flows & systemd Service
+#
+# Läuft im Container (hosts: nodered).
+# Die settings.js enthält die Konfiguration inkl. credentialSecret.
+# Die Default-Flows enthalten vorkonfigurierte MQTT- und HA-Verbindungen.
+
+# ------------------------------------------------------------------
+# Konfigurationsdateien
+# ------------------------------------------------------------------
+- name: Deploy Node-RED settings.js
+  template:
+    src: templates/settings.js.j2
+    dest: "{{ nodered_data_dir }}/settings.js"
+    mode: '0640'
+    owner: root
+    group: root
+  notify: Restart Node-RED
+
+- name: Check if flows.json already exists (skip default flows if user has data)
+  stat:
+    path: "{{ nodered_data_dir }}/flows.json"
+  register: existing_flows
+
+- name: Deploy default flows with pre-configured MQTT and HA connections
+  template:
+    src: templates/default_flows.json.j2
+    dest: "{{ nodered_data_dir }}/flows.json"
+    mode: '0640'
+    owner: root
+    group: root
+  when: not existing_flows.stat.exists
+  notify: Restart Node-RED
+
+- name: Deploy default flow credentials
+  template:
+    src: templates/default_flows_cred.json.j2
+    dest: "{{ nodered_data_dir }}/flows_cred.json"
+    mode: '0600'
+    owner: root
+    group: root
+  when: not existing_flows.stat.exists
+  notify: Restart Node-RED
+
+# ------------------------------------------------------------------
+# Systemd Service
+# ------------------------------------------------------------------
+- name: Deploy Node-RED systemd service
+  template:
+    src: templates/nodered.service.j2
+    dest: /etc/systemd/system/nodered.service
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart Node-RED

@@ -1,0 +1,249 @@
+---
+# ==============================================================================
+# Playbook: Services - Webserver
+# Description: Provisions Proxmox LXC containers and deploys Node.js webservers.
+#              Supports multiple webservers via the 'webservers' inventory group.
+#
+# Process:
+# 1. Proxmox Container Provisioning (localhost):
+#    - Downloads OS template if missing.
+#    - Creates/Configures the LXC container via Proxmox API (per webserver host).
+#    - Sets up port forwarding on the host.
+#
+# 2. Webserver Deployment (Containers):
+#    - Configures internal networking (Netplan) to enforce static IP.
+#    - Installs Node.js & dependencies.
+#    - Deploys application code from Git.
+#    - Configures and starts systemd service.
+#
+# Inventory Requirements (per host in 'webservers' group):
+#   - service_id                   (unique Proxmox VMID)
+#   - service_name                 (canonical name, e.g. "desktop-bg")
+#   - ansible_host                 (static IP for the container)
+#   - service_frontend_port        (port forwarded on Proxmox host)
+#   - service_backend_port         (port the app listens on)
+#   - webserver_git_repo           (Git repository URL)
+#   - webserver_git_branch         (Git branch, default: main)
+#   - webserver_build_command      (build command, default: npm run build)
+# ==============================================================================
+
+- name: Provision Proxmox Containers for Webservers
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  tags: [provision]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    # --------------------------------------------------------------------------
+    # Prerequisites
+    # --------------------------------------------------------------------------
+    - name: Ensure Proxmox API library is installed
+      apt:
+        name: python3-proxmoxer
+        state: present
+        update_cache: yes
+
+    - name: Get list of available OS templates
+      command: "pveam list local"
+      register: pveam_list
+      changed_when: false
+
+    - name: Download OS template if missing
+      command: "pveam download local {{ default_lxc_template.split('/')[-1] }}"
+      when: default_lxc_template.split('/')[-1] not in pveam_list.stdout
+
+    # --------------------------------------------------------------------------
+    # Container Management (per webserver host)
+    # --------------------------------------------------------------------------
+    - name: Create and configure LXC containers
+      community.proxmox.proxmox:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_api_token_id }}"
+        api_token_secret: "{{ proxmox_api_token_secret }}"
+        node: "{{ proxmox_node }}"
+        vmid: "{{ hostvars[item]['service_id'] }}"
+        hostname: "{{ item }}"
+        ostemplate: "{{ default_lxc_template }}"
+        cores: "{{ hostvars[item]['webserver_container_cores'] }}"
+        memory: "{{ hostvars[item]['webserver_container_memory'] }}"
+        swap: 1024
+        disk: "{{ hostvars[item]['webserver_container_rootfs'] }}"
+        netif:
+          net0: "name=eth0,bridge=vmbr0,ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
+        pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
+        onboot: yes
+        state: present
+      loop: "{{ groups['webservers'] }}"
+      loop_control:
+        label: "{{ item }} (VMID {{ hostvars[item]['service_id'] }})"
+
+    - name: Ensure containers are running
+      community.proxmox.proxmox:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "{{ proxmox_api_user }}"
+        api_token_id: "{{ proxmox_api_token_id }}"
+        api_token_secret: "{{ proxmox_api_token_secret }}"
+        node: "{{ proxmox_node }}"
+        hostname: "{{ item }}"
+        vmid: "{{ hostvars[item]['service_id'] }}"
+        state: started
+      loop: "{{ groups['webservers'] }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Wait for SSH to become available
+      wait_for:
+        host: "{{ hostvars[item]['ansible_host'] }}"
+        port: 22
+        timeout: 60
+        search_regex: OpenSSH
+        delay: 5
+      loop: "{{ groups['webservers'] }}"
+      loop_control:
+        label: "{{ item }}"
+
+    # --------------------------------------------------------------------------
+    # Host Networking (per webserver host)
+    # --------------------------------------------------------------------------
+    - name: Add container DNS entries to /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars[item]['ansible_host'] }} {{ item }}"
+        state: present
+        mode: '0644'
+      loop: "{{ groups['webservers'] }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Enable port forwarding to containers
+      ansible.builtin.iptables:
+        table: nat
+        chain: PREROUTING
+        protocol: tcp
+        destination_port: "{{ hostvars[item]['service_frontend_port'] }}"
+        jump: DNAT
+        to_destination: "{{ hostvars[item]['ansible_host'] }}:{{ hostvars[item]['service_backend_port'] }}"
+        comment: "Forward {{ hostvars[item]['service_frontend_port'] }} -> {{ item }}"
+      loop: "{{ groups['webservers'] }}"
+      loop_control:
+        label: "{{ item }} (:{{ hostvars[item]['service_frontend_port'] }})"
+
+
+- name: Deploy Webserver Applications
+  hosts: webservers
+  become: yes
+  tags: [deploy]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    # --------------------------------------------------------------------------
+    # Guest Networking (Netplan)
+    # --------------------------------------------------------------------------
+    - name: Configure static networking (Netplan)
+      template:
+        src: templates/netplan.yaml.j2
+        dest: /etc/netplan/99-ansible-static.yaml
+        mode: '0600'
+      register: netplan_config
+
+    - name: Remove conflicting default Netplan configs
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/netplan/50-cloud-init.yaml
+        - /etc/netplan/00-installer-config.yaml
+      register: netplan_cleanup
+
+    - name: Apply network changes
+      command: netplan apply
+      when: netplan_config.changed or netplan_cleanup.changed
+
+    # --------------------------------------------------------------------------
+    # System Dependencies
+    # --------------------------------------------------------------------------
+    - name: Install system dependencies
+      apt:
+        name:
+          - git
+          - curl
+          - gnupg
+        state: present
+        update_cache: yes
+
+    - name: Add NodeSource GPG keyring
+      shell: |
+        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+          | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+      args:
+        creates: /usr/share/keyrings/nodesource.gpg
+
+    - name: Add Node.js repository
+      copy:
+        dest: /etc/apt/sources.list.d/nodesource.list
+        content: "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_{{ webserver_node_version }}.x nodistro main\n"
+        mode: '0644'
+      register: nodesource_repo
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: latest
+        update_cache: yes
+
+    # --------------------------------------------------------------------------
+    # Application Deployment
+    # --------------------------------------------------------------------------
+    - name: Ensure application directory exists
+      file:
+        path: "/opt/{{ inventory_hostname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Clone/update repository
+      git:
+        repo: "{{ webserver_git_repo }}"
+        dest: "/opt/{{ inventory_hostname }}"
+        version: "{{ webserver_git_branch | default('main') }}"
+        force: yes
+      register: git_deployment
+
+    - name: Install dependencies and build application
+      shell: |
+        npm install
+        {{ webserver_build_command }}
+      args:
+        chdir: "/opt/{{ inventory_hostname }}"
+      environment:
+        NODE_OPTIONS: "--max-old-space-size=1024"
+      when: git_deployment.changed
+      notify: Restart webserver service
+
+    # --------------------------------------------------------------------------
+    # Service Management
+    # --------------------------------------------------------------------------
+    - name: Configure systemd service
+      template:
+        src: templates/webserver.service.j2
+        dest: "/etc/systemd/system/{{ inventory_hostname }}.service"
+        mode: '0644'
+      notify: Restart webserver service
+
+    - name: Start and enable webserver service
+      systemd:
+        name: "{{ inventory_hostname }}"
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+  handlers:
+    - name: Restart webserver service
+      systemd:
+        name: "{{ inventory_hostname }}"
+        state: restarted

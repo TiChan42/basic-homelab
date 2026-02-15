@@ -1,0 +1,98 @@
+#!/bin/bash
+# ============================================
+# n8n Restore Script – managed by Ansible
+# Restores n8n data from a validated tar.gz
+# archive on NAS if local data is missing.
+# Iterates through numbered backups (0 = newest)
+# until a valid one is found.
+# ============================================
+set -euo pipefail
+
+BACKUP_DIR="{{ nas_backup_mount }}/n8n"
+DATA_DIR="{{ n8n_data_dir }}"
+LOG_TAG="n8n-restore"
+MIN_BACKUP_SIZE={{ n8n_backup_min_size }}
+KEEP_COUNT={{ n8n_backup_keep_count }}
+
+BACKUP_PREFIX="$BACKUP_DIR/n8n_backup"
+
+# Wait for NFS mount (max 60 seconds)
+for i in $(seq 1 12); do
+  mountpoint -q "{{ nas_mount }}" && break
+  logger -t "$LOG_TAG" "Waiting for NFS mount... ($i/12)"
+  sleep 5
+done
+
+if ! mountpoint -q "{{ nas_mount }}"; then
+  logger -t "$LOG_TAG" "ERROR: NFS mount not available. Skipping restore."
+  exit 1
+fi
+
+# Check if local data is present
+if [ -f "$DATA_DIR/database.sqlite" ]; then
+  logger -t "$LOG_TAG" "Local database present. No restore needed."
+  exit 0
+fi
+
+# -----------------------------------------------
+# Helper: validate a backup archive
+# -----------------------------------------------
+validate_backup() {
+  local ARCHIVE="$1"
+
+  if [ ! -f "$ARCHIVE" ]; then
+    return 1
+  fi
+
+  if [ ! -s "$ARCHIVE" ]; then
+    logger -t "$LOG_TAG" "Validation failed: $(basename "$ARCHIVE") is empty."
+    return 1
+  fi
+
+  local FILE_SIZE
+  FILE_SIZE=$(stat -c%s "$ARCHIVE" 2>/dev/null || stat -f%z "$ARCHIVE" 2>/dev/null || echo "0")
+  if [ "$FILE_SIZE" -lt "$MIN_BACKUP_SIZE" ]; then
+    logger -t "$LOG_TAG" "Validation failed: $(basename "$ARCHIVE") too small (${FILE_SIZE} bytes)."
+    return 1
+  fi
+
+  if ! tar -tzf "$ARCHIVE" > /dev/null 2>&1; then
+    logger -t "$LOG_TAG" "Validation failed: $(basename "$ARCHIVE") is not a valid tar.gz."
+    return 1
+  fi
+
+  return 0
+}
+
+# -----------------------------------------------
+# Find best available backup (0 → 1 → 2 → ...)
+# -----------------------------------------------
+RESTORE_FILE=""
+
+for (( i = 0; i < KEEP_COUNT; i++ )); do
+  CANDIDATE="${BACKUP_PREFIX}.${i}.tar.gz"
+  if validate_backup "$CANDIDATE"; then
+    RESTORE_FILE="$CANDIDATE"
+    if [ "$i" -gt 0 ]; then
+      logger -t "$LOG_TAG" "WARNING: Backups 0-$((i-1)) invalid, falling back to backup ${i}."
+    else
+      logger -t "$LOG_TAG" "Using newest backup (0)."
+    fi
+    break
+  fi
+done
+
+if [ -z "$RESTORE_FILE" ]; then
+  logger -t "$LOG_TAG" "No valid NAS backup found (checked 0-$((KEEP_COUNT-1))). Starting fresh."
+  exit 0
+fi
+
+logger -t "$LOG_TAG" "Local data missing – restoring from $(basename "$RESTORE_FILE")..."
+
+# Stop n8n if running
+systemctl stop n8n 2>/dev/null || true
+
+# Extract archive (absolute paths are stored in the tar)
+tar -xzf "$RESTORE_FILE" -C /
+
+logger -t "$LOG_TAG" "Restore completed from $(basename "$RESTORE_FILE"). n8n will be started by systemd."

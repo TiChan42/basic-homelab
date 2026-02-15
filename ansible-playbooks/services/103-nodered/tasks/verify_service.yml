@@ -1,0 +1,25 @@
+---
+# tasks/verify_service.yml – Node-RED starten, Port prüfen & Status anzeigen
+#
+# Läuft im Container (hosts: nodered).
+
+- name: Start and enable Node-RED
+  systemd:
+    name: nodered
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Verify Node-RED is listening
+  wait_for:
+    port: "{{ service_backend_port }}"
+    timeout: 30
+
+- name: Show Node-RED status
+  command: systemctl status nodered --no-pager -l
+  register: nodered_status
+  changed_when: false
+
+- name: Print Node-RED status
+  debug:
+    msg: "{{ nodered_status.stdout_lines }}"

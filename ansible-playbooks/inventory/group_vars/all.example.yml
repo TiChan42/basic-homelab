@@ -1,6 +1,14 @@
 # ansible-playbooks/group_vars/all.example.yml
 # This is an example configuration file.
 # Copy this to 'all.yml' and adjust values to your needs.
+#
+# NOTE: Per-host settings (ports, IPs, container/VM IDs, Traefik routing)
+# are defined in inventory/hosts.yml – NOT here.
+# This file contains shared service configuration only.
+#
+# Unified per-host variables in hosts.yml:
+#   service_id, service_name, service_frontend_port, service_backend_port
+#   service_traefik: { enabled: true/false, domain: "..." }
 
 # ==============================================================================
 # Proxmox API Connection
@@ -63,8 +71,36 @@ check_mount_nfs_cron_minute: "*/1"
 # ==============================================================================
 # Webserver variables are defined per host in inventory/hosts.yml.
 # See the 'webservers' group for configuration.
-# Required per host: webserver_container_id, ansible_host,
-#   webserver_port, webserver_git_repo, webserver_git_branch
+# Required per host: service_id, service_name, ansible_host,
+#   service_frontend_port, service_backend_port,
+#   webserver_git_repo, webserver_git_branch, service_traefik: { ... }
+
+# ==============================================================================
+# Traefik Reverse Proxy – Service-specific settings
+# ==============================================================================
+traefik_version: "v3.3.3"
+traefik_container_memory: "256"
+traefik_container_cores: "1"
+traefik_container_rootfs: "{{ default_storage }}:4"
+traefik_dashboard_enabled: true
+traefik_dashboard_insecure: true           # Set false in production!
+traefik_log_level: "INFO"
+
+# Base domain for reference (individual domains are set per host via service_traefik.domain)
+traefik_base_domain: "homelab.local"       # CHANGE THIS to your domain
+
+# HTTPS / TLS settings
+traefik_https_enabled: true
+traefik_acme_enabled: false                 # Enable for Let's Encrypt
+# traefik_acme_email: "your@email.com"     # Required when acme is enabled
+
+# Per-service routing is defined on each host in inventory/hosts.yml:
+#   service_traefik:
+#     enabled: true/false   – whether Traefik creates a route
+#     domain: "..."         – the domain for the route
+#   service_backend_port    – the backend port to proxy to
+#   traefik_scheme: "http"  – (optional) backend scheme, default http
+# Traefik loops over all hosts and auto-generates routes from these variables.
 
 # ==============================================================================
 # MQTT Broker – Service-specific settings
@@ -72,8 +108,6 @@ check_mount_nfs_cron_minute: "*/1"
 mqtt_container_memory: "256"
 mqtt_container_cores: "1"
 mqtt_container_rootfs: "{{ default_storage }}:4"
-mqtt_port: "1883"
-mqtt_ws_port: "9001"
 mqtt_ws_enabled: false
 mqtt_auth_enabled: true
 mqtt_default_user: "mqttuser"                    # CHANGE THIS
@@ -129,7 +163,7 @@ ha_known_zigbee_dongles:
 ha_usb_extra_devices: []
 
 # Zigbee2MQTT
-ha_z2m_mqtt_broker_ip: "{{ hostvars['mqtt-broker']['ansible_host'] | default('192.168.1.60') }}"
+ha_z2m_mqtt_broker_ip: "{{ hostvars['mqtt-broker']['ansible_host'] | default('192.168.1.101') }}"
 ha_z2m_serial_port: "/dev/ttyUSB0"
 ha_z2m_serial_adapter: "ezsp"                    # ezsp, zstack, deconz, zigate
 
@@ -143,3 +177,71 @@ ha_backup_cron_hour: "2"                         # Daily at 02:30
 ha_backup_keep_count: 3                           # Number of rotated backups to keep (NAS + HA internal)
 ha_backup_min_size: 10240                         # Minimum backup size in bytes (10 KB)
 ha_healthcheck_cron_minute: "*/10"               # Every 10 minutes
+
+# ==============================================================================
+# Node-RED – Service-specific settings
+# ==============================================================================
+nodered_container_memory: "512"
+nodered_container_cores: "2"
+nodered_container_rootfs: "{{ default_storage }}:4"
+nodered_node_version: "22"
+nodered_data_dir: "/opt/nodered"
+nodered_timezone: "{{ ha_timezone | default('Europe/Berlin') }}"
+
+# Node-RED credential encryption key (for flow credentials)
+nodered_credential_secret: "CHANGE_ME_USE_ANSIBLE_VAULT"  # CHANGE THIS – use ansible-vault!
+
+# Node-RED MQTT connection (reuses MQTT broker settings)
+nodered_mqtt_broker_ip: "{{ hostvars['mqtt-broker']['ansible_host'] | default('192.168.1.101') }}"
+nodered_mqtt_port: "{{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') }}"
+nodered_mqtt_user: "{{ mqtt_default_user }}"
+nodered_mqtt_password: "{{ mqtt_default_password }}"
+
+# Node-RED HA connection
+nodered_ha_url: "http://{{ hostvars['homeassistant']['ansible_host'] | default('192.168.1.102') }}:{{ hostvars['homeassistant']['service_backend_port'] | default('8123') }}"
+# nodered_ha_token: "LONG_LIVED_ACCESS_TOKEN"    # Generate in HA → Profile → Long-Lived Access Tokens
+
+# Node-RED additional npm modules to pre-install
+nodered_extra_nodes:
+  - "node-red-contrib-home-assistant-websocket"
+
+# Node-RED Backup settings
+nodered_backup_script_path: "/usr/local/bin/nodered_backup.sh"
+nodered_restore_script_path: "/usr/local/bin/nodered_restore.sh"
+nodered_backup_cron_minute: "15"
+nodered_backup_cron_hour: "*/4"                   # Every 4 hours (offset :15)
+nodered_backup_min_size: 1024                      # Minimum backup size in bytes (1 KB)
+nodered_backup_keep_count: 3                       # Number of rotated backups to keep
+
+# ==============================================================================
+# n8n – Service-specific settings
+# ==============================================================================
+n8n_container_memory: "1024"
+n8n_container_cores: "2"
+n8n_container_rootfs: "{{ default_storage }}:8"
+n8n_node_version: "22"
+n8n_data_dir: "/opt/n8n"
+n8n_webhook_url: "http://{{ hostvars['n8n']['ansible_host'] | default('192.168.1.104') }}:{{ hostvars['n8n']['service_backend_port'] | default('5678') }}"
+n8n_timezone: "{{ ha_timezone | default('Europe/Berlin') }}"
+
+# n8n Authentication
+n8n_basic_auth_user: "admin"                       # CHANGE THIS
+n8n_basic_auth_password: "CHANGE_ME_NOW"           # CHANGE THIS – use ansible-vault!
+
+# n8n MQTT connection (reuses MQTT broker settings)
+n8n_mqtt_broker_ip: "{{ hostvars['mqtt-broker']['ansible_host'] | default('192.168.1.101') }}"
+n8n_mqtt_port: "{{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') }}"
+n8n_mqtt_user: "{{ mqtt_default_user }}"
+n8n_mqtt_password: "{{ mqtt_default_password }}"
+
+# n8n HA Integration
+n8n_ha_url: "http://{{ hostvars['homeassistant']['ansible_host'] | default('192.168.1.102') }}:{{ hostvars['homeassistant']['service_backend_port'] | default('8123') }}"
+# n8n_ha_token: "LONG_LIVED_ACCESS_TOKEN"         # Generate in HA → Profile → Long-Lived Access Tokens
+
+# n8n Backup settings
+n8n_backup_script_path: "/usr/local/bin/n8n_backup.sh"
+n8n_restore_script_path: "/usr/local/bin/n8n_restore.sh"
+n8n_backup_cron_minute: "30"
+n8n_backup_cron_hour: "*/6"                        # Every 6 hours (offset :30)
+n8n_backup_min_size: 1024                           # Minimum backup size in bytes (1 KB)
+n8n_backup_keep_count: 3                            # Number of rotated backups to keep

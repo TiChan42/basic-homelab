@@ -1,0 +1,133 @@
+---
+# tasks/provision_container.yml – LXC Container auf Proxmox erstellen & starten
+#
+# Benötigte Variablen (aus group_vars/all.yml):
+#   proxmox_api_host, proxmox_api_user, proxmox_api_token_id/secret
+#   proxmox_node, default_lxc_template, default_storage
+#   traefik_container_cores, traefik_container_memory, traefik_container_rootfs
+#   network_cidr, network_gateway
+# Per host (from inventory/hosts.yml):
+#   service_id, service_frontend_port, service_backend_port
+#   traefik_https_port, traefik_dashboard_port
+
+# ------------------------------------------------------------------
+# Prerequisites
+# ------------------------------------------------------------------
+- name: Ensure Proxmox API library is installed
+  apt:
+    name: python3-proxmoxer
+    state: present
+    update_cache: yes
+
+- name: Get list of available OS templates
+  command: "pveam list local"
+  register: pveam_list
+  changed_when: false
+
+- name: Download OS template if missing
+  command: "pveam download local {{ default_lxc_template.split('/')[-1] }}"
+  when: default_lxc_template.split('/')[-1] not in pveam_list.stdout
+
+# ------------------------------------------------------------------
+# Container creation
+# ------------------------------------------------------------------
+- name: Create Traefik LXC container
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_token_id: "{{ proxmox_api_token_id }}"
+    api_token_secret: "{{ proxmox_api_token_secret }}"
+    node: "{{ proxmox_node }}"
+    vmid: "{{ hostvars[item]['service_id'] }}"
+    hostname: "{{ item }}"
+    ostemplate: "{{ default_lxc_template }}"
+    cores: "{{ traefik_container_cores }}"
+    memory: "{{ traefik_container_memory }}"
+    swap: 256
+    disk: "{{ traefik_container_rootfs }}"
+    netif:
+      net0: "name=eth0,bridge=vmbr0,ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
+    pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
+    onboot: yes
+    state: present
+  loop: "{{ groups['traefik'] }}"
+  loop_control:
+    label: "{{ item }} (VMID {{ hostvars[item]['service_id'] }})"
+
+- name: Ensure Traefik container is running
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_token_id: "{{ proxmox_api_token_id }}"
+    api_token_secret: "{{ proxmox_api_token_secret }}"
+    node: "{{ proxmox_node }}"
+    hostname: "{{ item }}"
+    vmid: "{{ hostvars[item]['service_id'] }}"
+    state: started
+  loop: "{{ groups['traefik'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Wait for SSH to become available
+  wait_for:
+    host: "{{ hostvars[item]['ansible_host'] }}"
+    port: 22
+    timeout: 60
+    search_regex: OpenSSH
+    delay: 5
+  loop: "{{ groups['traefik'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+# ------------------------------------------------------------------
+# Host networking (DNS + Port-Forwarding)
+# ------------------------------------------------------------------
+- name: Add Traefik container DNS entry to /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    line: "{{ hostvars[item]['ansible_host'] }} {{ item }}"
+    state: present
+    mode: '0644'
+  loop: "{{ groups['traefik'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Forward HTTP port ({{ hostvars[item]['service_frontend_port'] }}) to Traefik container
+  ansible.builtin.iptables:
+    table: nat
+    chain: PREROUTING
+    protocol: tcp
+    destination_port: "{{ hostvars[item]['service_frontend_port'] }}"
+    jump: DNAT
+    to_destination: "{{ hostvars[item]['ansible_host'] }}:{{ hostvars[item]['service_backend_port'] }}"
+    comment: "Forward HTTP {{ hostvars[item]['service_frontend_port'] }} -> {{ item }}"
+  loop: "{{ groups['traefik'] }}"
+  loop_control:
+    label: "{{ item }} (:{{ hostvars[item]['service_frontend_port'] }})"
+
+- name: Forward HTTPS port ({{ hostvars[item]['traefik_https_port'] }}) to Traefik container
+  ansible.builtin.iptables:
+    table: nat
+    chain: PREROUTING
+    protocol: tcp
+    destination_port: "{{ hostvars[item]['traefik_https_port'] }}"
+    jump: DNAT
+    to_destination: "{{ hostvars[item]['ansible_host'] }}:{{ hostvars[item]['traefik_https_port'] }}"
+    comment: "Forward HTTPS {{ hostvars[item]['traefik_https_port'] }} -> {{ item }}"
+  loop: "{{ groups['traefik'] }}"
+  loop_control:
+    label: "{{ item }} (:{{ hostvars[item]['traefik_https_port'] }})"
+
+- name: Forward Traefik dashboard port ({{ hostvars[item]['traefik_dashboard_port'] }}) to container
+  ansible.builtin.iptables:
+    table: nat
+    chain: PREROUTING
+    protocol: tcp
+    destination_port: "{{ hostvars[item]['traefik_dashboard_port'] }}"
+    jump: DNAT
+    to_destination: "{{ hostvars[item]['ansible_host'] }}:{{ hostvars[item]['traefik_dashboard_port'] }}"
+    comment: "Forward Traefik Dashboard {{ hostvars[item]['traefik_dashboard_port'] }} -> {{ item }}"
+  loop: "{{ groups['traefik'] }}"
+  loop_control:
+    label: "{{ item }} (:{{ hostvars[item]['traefik_dashboard_port'] }})"
+  when: traefik_dashboard_enabled | default(true) | bool

@@ -1,0 +1,30 @@
+---
+# tasks/configure_n8n.yml – Environment-Datei & systemd Service
+#
+# Läuft im Container (hosts: n8n).
+# Die .env-Datei enthält alle n8n-Einstellungen inkl. MQTT- und HA-Verbindungsdaten
+# als Umgebungsvariablen, die in n8n-Workflows als Variablen verfügbar sind.
+
+# ------------------------------------------------------------------
+# Konfigurationsdateien
+# ------------------------------------------------------------------
+- name: Deploy n8n environment file
+  template:
+    src: templates/n8n.env.j2
+    dest: /etc/n8n.env
+    mode: '0600'
+    owner: root
+    group: root
+  notify: Restart n8n
+
+# ------------------------------------------------------------------
+# Systemd Service
+# ------------------------------------------------------------------
+- name: Deploy n8n systemd service
+  template:
+    src: templates/n8n.service.j2
+    dest: /etc/systemd/system/n8n.service
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart n8n
