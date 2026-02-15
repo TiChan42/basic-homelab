@@ -8,9 +8,7 @@
   file:
     path: "{{ nas_backup_mount }}/nodered"
     state: directory
-    owner: root
-    group: root
-    mode: '0750'
+    mode: '0777'
 
 - name: Check if local Node-RED flows exist
   stat:

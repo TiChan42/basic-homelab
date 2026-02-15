@@ -8,9 +8,7 @@
   file:
     path: "{{ nas_backup_mount }}/n8n"
     state: directory
-    owner: root
-    group: root
-    mode: '0750'
+    mode: '0777'
 
 - name: Check if local n8n database exists
   stat:

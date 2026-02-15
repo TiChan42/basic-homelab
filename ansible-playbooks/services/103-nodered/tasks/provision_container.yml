@@ -76,6 +76,12 @@
   loop_control:
     label: "{{ item }}"
 
+- name: Ensure NAS backup directory for Node-RED exists
+  file:
+    path: "{{ nas_backup_mount }}/nodered"
+    state: directory
+    mode: '0777'
+
 - name: Ensure Node-RED container is running
   community.proxmox.proxmox:
     api_host: "{{ proxmox_api_host }}"
