@@ -6,7 +6,10 @@
 # Any host with  service_traefik.enabled: true  gets a route.
 # Required host_vars:  service_name, service_backend_port, ansible_host
 #   service_traefik: { enabled: true, domain: "..." }
-# Optional host_vars:  traefik_scheme (default: http)
+# Optional host_vars:
+#   traefik_scheme (default: http)
+#   service_traefik.api_domain   – extra Host for API access
+#   service_traefik.ws_domain    – extra Host for WebSocket access
 # ============================================
 
 http:
@@ -42,11 +45,24 @@ http:
 {% for host in groups['all'] | default([]) %}
 {% set svc_traefik = hostvars[host].get('service_traefik', {}) %}
 {% if svc_traefik.get('enabled', false) | bool and svc_traefik.get('domain', '') | length > 0 %}
+{% set api_domain = svc_traefik.get('api_domain', '') %}
+{% set ws_domain = svc_traefik.get('ws_domain', '') %}
+{% set all_domains = [svc_traefik['domain']] %}
+{% if api_domain | length > 0 %}{% set _ = all_domains.append(api_domain) %}{% endif %}
+{% if ws_domain | length > 0 %}{% set _ = all_domains.append(ws_domain) %}{% endif %}
+{% set host_rule = all_domains | map('regex_replace', '^(.*)$', 'Host(`\1`)') | join(' || ') %}
     # ------------------------------------------------------------------
     # {{ host }} – {{ hostvars[host]['ansible_host'] | default('unknown') }}
+    #   frontend: {{ svc_traefik['domain'] }}
+{% if api_domain | length > 0 %}
+    #   api:      {{ api_domain }}
+{% endif %}
+{% if ws_domain | length > 0 %}
+    #   ws:       {{ ws_domain }}
+{% endif %}
     # ------------------------------------------------------------------
     {{ host }}:
-      rule: "Host(`{{ svc_traefik['domain'] }}`)"
+      rule: "{{ host_rule }}"
       entryPoints:
         - websecure
       service: {{ host }}
@@ -58,7 +74,7 @@ http:
 {% endif %}
 
     {{ host }}-http:
-      rule: "Host(`{{ svc_traefik['domain'] }}`)"
+      rule: "{{ host_rule }}"
       entryPoints:
         - web
       service: {{ host }}
@@ -85,5 +101,4 @@ tls:
   options:
     default:
       minVersion: VersionTLS12
-      sniStrict: true
 {% endif %}

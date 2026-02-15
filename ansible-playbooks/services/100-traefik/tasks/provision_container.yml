@@ -92,6 +92,24 @@
   loop_control:
     label: "{{ item }}"
 
+- name: Add *.home.lab DNS entries pointing to Traefik
+  lineinfile:
+    path: /etc/hosts
+    regexp: ".*{{ hostvars[item]['service_traefik']['domain'] }}$"
+    line: >-
+      {{ hostvars['traefik']['ansible_host'] }}
+      {{ hostvars[item]['service_traefik']['domain'] }}
+      {{ hostvars[item]['service_traefik'].get('api_domain', '') }}
+      {{ hostvars[item]['service_traefik'].get('ws_domain', '') }}
+    state: present
+    mode: '0644'
+  loop: "{{ groups['all'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - hostvars[item].get('service_traefik', {}).get('enabled', false) | bool
+    - hostvars[item].get('service_traefik', {}).get('domain', '') | length > 0
+
 - name: Forward HTTP port ({{ hostvars[item]['service_frontend_port'] }}) to Traefik container
   ansible.builtin.iptables:
     table: nat
