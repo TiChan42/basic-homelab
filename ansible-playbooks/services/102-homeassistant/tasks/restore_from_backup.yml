@@ -210,7 +210,7 @@
 # ------------------------------------------------------------------
 - name: Wait for HA to restart after restore
   uri:
-    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/api/"
+    url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/"
     method: GET
     status_code: [200, 401]
     timeout: 10
@@ -235,17 +235,17 @@
 
 - name: Re-authenticate via login flow after restore
   uri:
-    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/login_flow"
+    url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/auth/login_flow"
     method: POST
     headers:
-      Origin: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+      Origin: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}"
     body_format: json
     body:
-      client_id: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/"
+      client_id: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/"
       handler:
         - "homeassistant"
         - null
-      redirect_uri: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/"
+      redirect_uri: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/"
     status_code: [200]
     timeout: 30
   register: restore_login_flow
@@ -256,15 +256,15 @@
 
 - name: Submit credentials to post-restore login flow
   uri:
-    url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.json.flow_id }}"
+    url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.json.flow_id }}"
     method: POST
     headers:
-      Origin: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+      Origin: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}"
     body_format: json
     body:
       username: "{{ ha_admin_user }}"
       password: "{{ ha_admin_password }}"
-      client_id: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/"
+      client_id: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/"
     status_code: [200]
     timeout: 30
   register: restore_login_result
@@ -278,13 +278,13 @@
 
 - name: Exchange post-restore auth code for tokens
   uri:
-    url: "http://{{ hostvars[item.item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/token"
+    url: "http://{{ ha_initial_ips[item.item.item] }}:{{ ha_port | default('8123') }}/auth/token"
     method: POST
     body_format: form-urlencoded
     body:
       grant_type: authorization_code
       code: "{{ item.json.result }}"
-      client_id: "http://{{ hostvars[item.item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/"
+      client_id: "http://{{ ha_initial_ips[item.item.item] }}:{{ ha_port | default('8123') }}/"
     status_code: [200]
     timeout: 30
   register: restore_auth_response
