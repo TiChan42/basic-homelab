@@ -15,8 +15,12 @@
 #
 # 2. Home Assistant Configuration (localhost → HA API):
 #    - Completes onboarding (creates admin user).
+#    - Attempts restore from NAS backup (if available).
+#      → If restored: skips addon install, core config, MQTT setup.
+#      → Critical: must happen BEFORE any addon starts to preserve
+#        the Zigbee coordinator's paired device list.
 #    - Configures static IP via Supervisor Network API.
-#    - Installs Add-ons: Zigbee2MQTT, Matter Server.
+#    - Installs Add-ons: Zigbee2MQTT, Matter Server (fresh install only).
 #    - Configures Zigbee2MQTT to use the external Mosquitto broker.
 #    - Configures MQTT integration in HA.
 #
@@ -105,29 +109,47 @@
     - name: Complete onboarding and authenticate
       include_tasks: tasks/onboarding.yml
 
+    # --- Restore from NAS backup (if available) ---
+    # MUST run BEFORE addon installation! If Z2M starts before restore,
+    # it initializes a fresh Zigbee network on the coordinator, losing
+    # all previously paired devices permanently.
+    - name: Attempt restore from NAS backup
+      include_tasks: tasks/restore_from_backup.yml
+
     # --- Create personal (default) user ---
+    # Skipped after restore: user already exists in restored auth DB.
     - name: Create default user for day-to-day use
       include_tasks: tasks/create_default_user.yml
+      when: not (ha_restored_from_backup | default(false) | bool)
 
     # --- Core config (country, timezone) & OS updates ---
+    # Skipped after restore: core config already set.
     - name: Configure core settings and apply updates
       include_tasks: tasks/configure_core_and_updates.yml
+      when: not (ha_restored_from_backup | default(false) | bool)
 
     # --- Static IP configuration ---
+    # Always runs: HAOS network config is at the OS level and NOT
+    # included in HA backups.
     - name: Configure static IP address
       include_tasks: tasks/configure_network.yml
 
     # --- Reverse proxy (Traefik) ---
+    # Always runs: has its own idempotent check (skips if already present).
     - name: Configure reverse proxy trust
       include_tasks: tasks/configure_reverse_proxy.yml
 
     # --- Add-on installation ---
+    # Skipped after restore: addons and their data are restored from backup.
     - name: Install and configure add-ons
       include_tasks: tasks/install_addons.yml
+      when: not (ha_restored_from_backup | default(false) | bool)
 
     # --- MQTT integration ---
+    # Skipped after restore: MQTT integration config is in .storage/.
     - name: Configure MQTT integration
       include_tasks: tasks/configure_mqtt.yml
+      when: not (ha_restored_from_backup | default(false) | bool)
 
     # --- Reboot & Health Check ---
     - name: Reboot and verify Home Assistant

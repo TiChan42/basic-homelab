@@ -2,8 +2,13 @@
 # ============================================
 # Home Assistant Backup Script
 # Uses WebSocket API via ha_supervisor_api.py
-# for reliable backup creation & download.
+# for reliable FULL backup creation & download.
 # Numbered rotation (0 = newest) with validation.
+#
+# Creates FULL backups (not partial) to ensure
+# all addon data (Z2M device database, Matter,
+# etc.), HA core config, folders, and the
+# recorder database are captured completely.
 # ============================================
 set -euo pipefail
 
@@ -81,32 +86,49 @@ for instance in "${HA_INSTANCES[@]}"; do
     continue
   fi
 
-  # Trigger backup via WebSocket API
-  BACKUP_RESPONSE=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws backup/generate \
-    '{"agent_ids":["hassio.local"],"include_all_addons":true,"include_database":true,"include_homeassistant":true,"name":"automated_nas_backup"}' 2>&1) || true
+  # Trigger FULL backup via Supervisor REST API (POST /backups/new/full).
+  # The WebSocket 'backup/generate' command creates partial backups even
+  # without include_* params. The Supervisor REST endpoint creates a true
+  # full backup containing: HA core config, ALL addons with their data,
+  # ALL folders (ssl, share, media, addons/local), and the recorder database.
+  # This ensures everything needed for a complete restore is captured,
+  # including Z2M's device database, coordinator backup, and Matter data.
+  BACKUP_RESPONSE=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" POST /backups/new/full \
+    '{"name":"automated_nas_backup"}' 2>&1) || true
 
-  BACKUP_JOB_ID=$(echo "$BACKUP_RESPONSE" | jq -r '.backup_job_id // empty' 2>/dev/null)
+  # The Supervisor REST endpoint returns both slug and job_id.
+  # The call blocks until the backup is created, so the slug is
+  # immediately available – no need to poll for completion.
+  BACKUP_SLUG=$(echo "$BACKUP_RESPONSE" | jq -r '.slug // empty' 2>/dev/null)
+  BACKUP_JOB_ID=$(echo "$BACKUP_RESPONSE" | jq -r '.job_id // empty' 2>/dev/null)
 
-  if [ -z "$BACKUP_JOB_ID" ]; then
+  if [ -z "$BACKUP_SLUG" ] && [ -z "$BACKUP_JOB_ID" ]; then
     logger -t "$INSTANCE_TAG" "ERROR: Failed to trigger backup. Response: $BACKUP_RESPONSE"
     continue
   fi
 
-  logger -t "$INSTANCE_TAG" "Backup triggered (job: $BACKUP_JOB_ID). Waiting for completion..."
+  # If we got the slug directly (synchronous), use it.
+  # Otherwise fall back to polling for completion.
+  BACKUP_ID="$BACKUP_SLUG"
 
-  # Wait for backup completion (poll backup/info every 10s, max 10 min)
-  BACKUP_ID=""
-  for i in $(seq 1 60); do
-    sleep 10
-    BACKUP_INFO=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws backup/info 2>/dev/null) || continue
-    BACKUP_STATE=$(echo "$BACKUP_INFO" | jq -r '.state // empty' 2>/dev/null)
+  if [ -z "$BACKUP_ID" ]; then
+    logger -t "$INSTANCE_TAG" "Backup triggered (job: $BACKUP_JOB_ID). Waiting for completion..."
 
-    if [ "$BACKUP_STATE" = "idle" ]; then
-      # Backup complete – find the newest backup
-      BACKUP_ID=$(echo "$BACKUP_INFO" | jq -r '.backups | sort_by(.date) | reverse | .[0].backup_id // empty' 2>/dev/null)
-      break
-    fi
-  done
+    # Wait for backup completion (poll backup/info every 10s, max 10 min)
+    for i in $(seq 1 60); do
+      sleep 10
+      BACKUP_INFO=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws backup/info 2>/dev/null) || continue
+      BACKUP_STATE=$(echo "$BACKUP_INFO" | jq -r '.state // empty' 2>/dev/null)
+
+      if [ "$BACKUP_STATE" = "idle" ]; then
+        # Backup complete – find the newest backup
+        BACKUP_ID=$(echo "$BACKUP_INFO" | jq -r '.backups | sort_by(.date) | reverse | .[0].backup_id // empty' 2>/dev/null)
+        break
+      fi
+    done
+  else
+    logger -t "$INSTANCE_TAG" "Backup created (slug: $BACKUP_ID)."
+  fi
 
   if [ -z "$BACKUP_ID" ]; then
     logger -t "$INSTANCE_TAG" "ERROR: Backup did not complete within timeout."

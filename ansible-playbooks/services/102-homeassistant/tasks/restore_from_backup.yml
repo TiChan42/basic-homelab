@@ -1,0 +1,336 @@
+---
+# ==============================================================================
+# Tasks: Restore Home Assistant from NAS backup (if available)
+# ==============================================================================
+# Runs AFTER onboarding and BEFORE any addon installation/configuration.
+# This is critical: if Z2M starts before the restore, it will initialize
+# a fresh Zigbee network on the coordinator, losing all paired devices.
+#
+# Flow:
+# 1. Check if a valid backup exists on the NAS
+# 2. Upload backup to HA via REST API
+# 3. Read backup metadata (partial vs full)
+# 4. Trigger the appropriate restore via WebSocket API
+# 5. Wait for HA to come back
+# 6. Re-authenticate (restore replaces the auth database)
+# 7. Set ha_restored_from_backup=true so subsequent tasks can skip
+#
+# On re-runs (HA already configured), this task is skipped entirely
+# based on entity count (same logic as the standalone restore script).
+# ==============================================================================
+
+- name: Initialize restore tracking
+  set_fact:
+    ha_restored_from_backup: false
+
+# ------------------------------------------------------------------
+# Pre-flight: should we attempt a restore?
+# ------------------------------------------------------------------
+- name: Check current HA entity count (overwrite protection)
+  uri:
+    url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/states"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    status_code: [200]
+    timeout: 30
+  register: ha_states_check
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Evaluate if restore is needed
+  set_fact:
+    ha_restore_needed: >-
+      {{ ha_states_check.results
+         | selectattr('json', 'defined')
+         | map(attribute='json')
+         | map('length')
+         | list | first | default(0) | int <= 50 }}
+
+- name: Show restore decision
+  debug:
+    msg: >-
+      {{ 'HA has few entities (' +
+         (ha_states_check.results | selectattr('json', 'defined')
+          | map(attribute='json') | map('length') | list | first | default(0) | string) +
+         ') – will attempt restore from NAS backup.'
+         if ha_restore_needed | bool
+         else 'HA already has data – skipping restore.' }}
+
+# ------------------------------------------------------------------
+# Find and validate backup on NAS
+# ------------------------------------------------------------------
+- name: Check for NAS backup files
+  stat:
+    path: "{{ nas_backup_mount }}/homeassistant/homeassistant/ha_backup.{{ item_idx }}.tar"
+  register: backup_candidates
+  loop: "{{ range(0, ha_backup_keep_count | int) | list }}"
+  loop_control:
+    loop_var: item_idx
+  when: ha_restore_needed | bool
+
+- name: Find best valid backup
+  set_fact:
+    ha_restore_file: >-
+      {{ (backup_candidates.results
+          | default([])
+          | selectattr('stat', 'defined')
+          | selectattr('stat.exists', 'equalto', true)
+          | selectattr('stat.size', 'gt', ha_backup_min_size | int)
+          | map(attribute='stat.path')
+          | list | first | default('')) }}
+  when: ha_restore_needed | bool
+
+- name: Show backup file status
+  debug:
+    msg: >-
+      {{ 'Found valid backup: ' + ha_restore_file
+         if ha_restore_file | default('') | length > 0
+         else 'No valid backup found on NAS – proceeding with fresh install.' }}
+  when: ha_restore_needed | bool
+
+# ------------------------------------------------------------------
+# Upload backup to HA
+# ------------------------------------------------------------------
+- name: Upload backup to Home Assistant
+  shell: |
+    curl -s -w "\n%{http_code}" -X POST \
+      "http://{{ ha_initial_ips[groups['homeassistant'][0]] }}:{{ ha_port | default('8123') }}/api/hassio/backups/new/upload" \
+      -H "Authorization: Bearer {{ ha_tokens[groups['homeassistant'][0]] }}" \
+      -F "file=@{{ ha_restore_file }}"
+  register: ha_backup_upload
+  no_log: true
+  when:
+    - ha_restore_needed | bool
+    - ha_restore_file | default('') | length > 0
+
+- name: Parse upload response
+  set_fact:
+    ha_backup_slug: >-
+      {{ (ha_backup_upload.stdout_lines[0:-1] | join('') | from_json).data.slug | default('') }}
+    ha_upload_http: "{{ ha_backup_upload.stdout_lines[-1] | default('0') }}"
+  when:
+    - ha_backup_upload is defined
+    - ha_backup_upload.skipped is not defined or not ha_backup_upload.skipped
+
+- name: Verify upload succeeded
+  debug:
+    msg: "Backup uploaded successfully (slug: {{ ha_backup_slug }}, HTTP {{ ha_upload_http }})"
+  when:
+    - ha_backup_slug is defined
+    - ha_backup_slug | length > 0
+    - ha_upload_http | default('0') == '200'
+
+- name: Fail if upload failed
+  fail:
+    msg: "Backup upload failed (HTTP {{ ha_upload_http | default('N/A') }})"
+  when:
+    - ha_backup_upload is defined
+    - ha_backup_upload.skipped is not defined or not ha_backup_upload.skipped
+    - ha_upload_http | default('0') != '200' or ha_backup_slug | default('') | length == 0
+
+# ------------------------------------------------------------------
+# Read backup metadata and build restore payload
+# ------------------------------------------------------------------
+- name: Read backup metadata (backup.json)
+  shell: >-
+    tar -xf {{ ha_restore_file }} -O ./backup.json 2>/dev/null
+  register: ha_backup_meta_raw
+  when:
+    - ha_restore_needed | bool
+    - ha_backup_slug | default('') | length > 0
+
+- name: Parse backup metadata
+  set_fact:
+    ha_backup_meta: "{{ ha_backup_meta_raw.stdout | from_json }}"
+  when:
+    - ha_backup_meta_raw is defined
+    - ha_backup_meta_raw.skipped is not defined or not ha_backup_meta_raw.skipped
+
+- name: Build restore command and payload
+  set_fact:
+    ha_restore_endpoint: >-
+      {{ '/backups/' + ha_backup_slug + '/restore/partial'
+         if (ha_backup_meta.type | default('full')) == 'partial'
+         else '/backups/' + ha_backup_slug + '/restore/full' }}
+    ha_restore_payload: >-
+      {{ _partial_payload if (ha_backup_meta.type | default('full')) == 'partial'
+         else '{}' }}
+  vars:
+    _addon_slugs: "{{ ha_backup_meta.addons | default([]) | map(attribute='slug') | list }}"
+    _folders: "{{ ha_backup_meta.folders | default([]) }}"
+    _has_ha: "{{ ha_backup_meta.homeassistant is defined and ha_backup_meta.homeassistant }}"
+    _partial_payload: >-
+      {{ {'homeassistant': _has_ha | bool,
+          'addons': _addon_slugs,
+          'folders': _folders} | to_json }}
+  when:
+    - ha_backup_meta is defined
+
+- name: Show restore plan
+  debug:
+    msg: >-
+      Restoring {{ ha_backup_meta.type | default('full') }} backup
+      (slug: {{ ha_backup_slug }})
+      via {{ ha_restore_endpoint }}.
+      Addons: {{ ha_backup_meta.addons | default([]) | map(attribute='slug') | list }},
+      Folders: {{ ha_backup_meta.folders | default([]) }},
+      HA Core: {{ ha_backup_meta.homeassistant is defined }}
+  when:
+    - ha_backup_meta is defined
+
+# ------------------------------------------------------------------
+# Trigger restore via Supervisor REST API
+# ------------------------------------------------------------------
+- name: Trigger restore via Supervisor API
+  shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ ha_initial_ips[groups['homeassistant'][0]] }}:{{ ha_port | default('8123') }}"
+    "{{ ha_tokens[groups['homeassistant'][0]] }}"
+    POST
+    {{ ha_restore_endpoint }}
+    '{{ ha_restore_payload }}'
+  register: ha_restore_result
+  # The WebSocket/API connection drops when HA restarts – this is expected.
+  failed_when: false
+  no_log: true
+  when:
+    - ha_restore_endpoint is defined
+    - ha_backup_slug | default('') | length > 0
+
+- name: Show restore trigger result
+  debug:
+    msg: "Restore triggered. HA will restart now."
+  when:
+    - ha_restore_result is defined
+    - ha_restore_result.skipped is not defined or not ha_restore_result.skipped
+
+# ------------------------------------------------------------------
+# Wait for HA to come back after restore
+# ------------------------------------------------------------------
+- name: Wait for HA to restart after restore
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/api/"
+    method: GET
+    status_code: [200, 401]
+    timeout: 10
+  register: ha_restore_wait
+  retries: 36
+  delay: 10
+  until: ha_restore_wait.status is defined and ha_restore_wait.status in [200, 401]
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - ha_restore_result is defined
+    - ha_restore_result.skipped is not defined or not ha_restore_result.skipped
+
+# ------------------------------------------------------------------
+# Re-authenticate after restore (auth DB was replaced)
+# ------------------------------------------------------------------
+- name: Wait additional time for HA to fully initialize after restore
+  pause:
+    seconds: 30
+  when:
+    - ha_restore_result is defined
+    - ha_restore_result.skipped is not defined or not ha_restore_result.skipped
+
+- name: Re-authenticate via login flow after restore
+  uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/login_flow"
+    method: POST
+    headers:
+      Origin: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    body_format: json
+    body:
+      client_id: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/"
+      handler:
+        - "homeassistant"
+        - null
+      redirect_uri: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/"
+    status_code: [200]
+    timeout: 30
+  register: restore_login_flow
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - ha_restore_result is defined
+    - ha_restore_result.skipped is not defined or not ha_restore_result.skipped
+
+- name: Submit credentials to post-restore login flow
+  uri:
+    url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.json.flow_id }}"
+    method: POST
+    headers:
+      Origin: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+    body_format: json
+    body:
+      username: "{{ ha_admin_user }}"
+      password: "{{ ha_admin_password }}"
+      client_id: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/"
+    status_code: [200]
+    timeout: 30
+  register: restore_login_result
+  no_log: true
+  loop: "{{ restore_login_flow.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+
+- name: Exchange post-restore auth code for tokens
+  uri:
+    url: "http://{{ hostvars[item.item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: authorization_code
+      code: "{{ item.json.result }}"
+      client_id: "http://{{ hostvars[item.item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/"
+    status_code: [200]
+    timeout: 30
+  register: restore_auth_response
+  no_log: true
+  loop: "{{ restore_login_result.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+
+- name: Update ha_tokens with post-restore tokens
+  set_fact:
+    ha_tokens: "{{ ha_tokens | combine({ item.item.item.item: item.json.access_token }) }}"
+  loop: "{{ restore_auth_response.results }}"
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+
+- name: Save post-restore refresh token for backup scripts
+  copy:
+    dest: "{{ ha_refresh_token_file }}"
+    content: "{{ item.json.refresh_token }}"
+    mode: '0600'
+    owner: root
+    group: root
+  loop: "{{ restore_auth_response.results }}"
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+
+# ------------------------------------------------------------------
+# Mark restore as completed
+# ------------------------------------------------------------------
+- name: Set restore flag
+  set_fact:
+    ha_restored_from_backup: true
+  when:
+    - ha_restore_result is defined
+    - ha_restore_result.skipped is not defined or not ha_restore_result.skipped
+
+- name: Show final restore status
+  debug:
+    msg: >-
+      {{ 'HA successfully restored from NAS backup. Subsequent fresh-install tasks will be skipped.'
+         if ha_restored_from_backup | bool
+         else 'No restore performed – continuing with fresh installation.' }}

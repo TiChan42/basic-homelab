@@ -228,29 +228,29 @@ if [ "$BACKUP_TYPE" = "partial" ]; then
   FOLDERS=$(echo "$BACKUP_META" | jq -c '.folders // []' 2>/dev/null || echo "[]")
   HAS_HA=$(echo "$BACKUP_META" | jq -r '.homeassistant // empty' 2>/dev/null)
 
-  RESTORE_DATA="{\"backup_id\":\"$BACKUP_SLUG\",\"agent_id\":\"hassio.local\""
+  RESTORE_DATA="{"
   if [ -n "$HAS_HA" ]; then
-    RESTORE_DATA="$RESTORE_DATA,\"homeassistant\":true"
+    RESTORE_DATA="$RESTORE_DATA\"homeassistant\":true,"
   fi
-  RESTORE_DATA="$RESTORE_DATA,\"addons\":$ADDON_SLUGS,\"folders\":$FOLDERS}"
+  RESTORE_DATA="$RESTORE_DATA\"addons\":$ADDON_SLUGS,\"folders\":$FOLDERS}"
 
   logger -t "$LOG_TAG" "Partial backup detected. Restoring: addons=$ADDON_SLUGS folders=$FOLDERS homeassistant=$([ -n "$HAS_HA" ] && echo true || echo false)"
-  RESTORE_CMD="backup/restore/partial"
+  RESTORE_ENDPOINT="/backups/$BACKUP_SLUG/restore/partial"
 else
-  RESTORE_DATA="{\"backup_id\":\"$BACKUP_SLUG\",\"agent_id\":\"hassio.local\"}"
+  RESTORE_DATA="{}"
   logger -t "$LOG_TAG" "Full backup detected. Triggering full restore..."
-  RESTORE_CMD="backup/restore/full"
+  RESTORE_ENDPOINT="/backups/$BACKUP_SLUG/restore/full"
 fi
 
 # -----------------------------------------------
-# Step 3: Trigger restore via WebSocket API
-# The WebSocket connection will drop when HA
-# restarts – this is expected and not an error.
+# Step 3: Trigger restore via Supervisor REST API.
+# The connection will drop when HA restarts –
+# this is expected and not an error.
 # -----------------------------------------------
-RESTORE_RESP=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws "$RESTORE_CMD" \
+RESTORE_RESP=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" POST "$RESTORE_ENDPOINT" \
   "$RESTORE_DATA" 2>&1) || true
 
-logger -t "$LOG_TAG" "Restore triggered ($RESTORE_CMD). Response: $RESTORE_RESP"
+logger -t "$LOG_TAG" "Restore triggered ($RESTORE_ENDPOINT). Response: $RESTORE_RESP"
 
 # -----------------------------------------------
 # Step 4: Wait for HA to come back after restore,
