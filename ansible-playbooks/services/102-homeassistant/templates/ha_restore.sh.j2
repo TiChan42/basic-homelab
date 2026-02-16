@@ -2,8 +2,12 @@
 # ============================================
 # Home Assistant Restore Script – managed by Ansible
 # Restores HA from a validated NAS backup by
-# uploading it to HA and triggering a full restore
+# uploading it to HA and triggering a partial restore
 # via the Supervisor API.
+#
+# Usage:
+#   ha_restore.sh          – restore with overwrite protection
+#   ha_restore.sh --force  – skip overwrite protection
 # ============================================
 set -euo pipefail
 
@@ -14,8 +18,14 @@ MIN_BACKUP_SIZE={{ ha_backup_min_size }}
 API_HELPER="{{ ha_supervisor_api_path | default('/home/homelab/basic-homelab/ansible-playbooks/services/102-homeassistant/files/ha_supervisor_api.py') }}"
 LOG_TAG="ha-restore"
 HA_URL="http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port | default('8123') }}"
+ADMIN_USER="{{ admin_user }}"
+ADMIN_PASS="{{ admin_password }}"
 
 BACKUP_PREFIX="$BACKUP_DIR/ha_backup"
+FORCE=false
+if [ "${1:-}" = "--force" ]; then
+  FORCE=true
+fi
 
 # -----------------------------------------------
 # Helper: obtain a fresh access token via refresh
@@ -28,6 +38,56 @@ get_access_token() {
     -d "refresh_token=$REFRESH_TOKEN")
 
   echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty'
+}
+
+# -----------------------------------------------
+# Helper: full login flow (username/password)
+# Returns new access token and saves refresh token
+# -----------------------------------------------
+login_and_save_token() {
+  local FLOW FLOW_ID RESULT AUTH_CODE TOKEN_RESP NEW_ACCESS NEW_REFRESH
+
+  # Step 1: Initiate login flow
+  FLOW=$(curl -s -X POST "$HA_URL/auth/login_flow" \
+    -H "Content-Type: application/json" \
+    -d "{\"client_id\":\"$HA_URL/\",\"handler\":[\"homeassistant\",null],\"redirect_uri\":\"$HA_URL/\"}")
+  FLOW_ID=$(echo "$FLOW" | jq -r '.flow_id // empty')
+
+  if [ -z "$FLOW_ID" ]; then
+    logger -t "$LOG_TAG" "ERROR: Failed to initiate login flow."
+    return 1
+  fi
+
+  # Step 2: Submit credentials
+  RESULT=$(curl -s -X POST "$HA_URL/auth/login_flow/$FLOW_ID" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\",\"client_id\":\"$HA_URL/\"}")
+  AUTH_CODE=$(echo "$RESULT" | jq -r '.result // empty')
+
+  if [ -z "$AUTH_CODE" ]; then
+    logger -t "$LOG_TAG" "ERROR: Login failed. Response: $RESULT"
+    return 1
+  fi
+
+  # Step 3: Exchange auth code for tokens
+  TOKEN_RESP=$(curl -s -X POST "$HA_URL/auth/token" \
+    -d "grant_type=authorization_code" \
+    -d "client_id=$HA_URL/" \
+    -d "code=$AUTH_CODE")
+  NEW_ACCESS=$(echo "$TOKEN_RESP" | jq -r '.access_token // empty')
+  NEW_REFRESH=$(echo "$TOKEN_RESP" | jq -r '.refresh_token // empty')
+
+  if [ -z "$NEW_ACCESS" ] || [ -z "$NEW_REFRESH" ]; then
+    logger -t "$LOG_TAG" "ERROR: Token exchange failed."
+    return 1
+  fi
+
+  # Save new refresh token for future use (backup script, etc.)
+  echo "$NEW_REFRESH" > "$REFRESH_TOKEN_FILE"
+  REFRESH_TOKEN="$NEW_REFRESH"
+  logger -t "$LOG_TAG" "New refresh token saved to $REFRESH_TOKEN_FILE"
+
+  echo "$NEW_ACCESS"
 }
 
 # -----------------------------------------------
@@ -87,16 +147,26 @@ if [ -z "$HA_TOKEN" ]; then
   exit 1
 fi
 
-# Check if HA already has data (integrations as indicator)
-HA_CONFIG=$(curl -s -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/config" 2>/dev/null || echo "{}")
-COMPONENT_COUNT=$(echo "$HA_CONFIG" | jq '.components | length' 2>/dev/null || echo "0")
+# -----------------------------------------------
+# Overwrite protection (skip with --force)
+# Uses entity count as indicator: fresh HA after
+# onboarding has ~30-40 entities; a configured or
+# restored HA has significantly more (80+).
+# -----------------------------------------------
+if [ "$FORCE" = false ]; then
+  ENTITY_COUNT=$(curl -s -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states" 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
 
-if [ "${COMPONENT_COUNT:-0}" -gt 20 ]; then
-  logger -t "$LOG_TAG" "HA already configured ($COMPONENT_COUNT components loaded). No restore needed."
-  exit 0
+  if [ "${ENTITY_COUNT:-0}" -gt 50 ]; then
+    logger -t "$LOG_TAG" "HA already has data ($ENTITY_COUNT entities). Use --force to override. No restore needed."
+    exit 0
+  fi
+
+  logger -t "$LOG_TAG" "HA has only $ENTITY_COUNT entities – checking for NAS backup to restore..."
 fi
 
-logger -t "$LOG_TAG" "HA has only $COMPONENT_COUNT components – checking for NAS backup to restore..."
+if [ "$FORCE" = true ]; then
+  logger -t "$LOG_TAG" "Force mode enabled – skipping overwrite protection."
+fi
 
 # -----------------------------------------------
 # Find best available backup (0 → 1 → 2 → ...)
@@ -143,13 +213,69 @@ if [ "$UPLOAD_HTTP" != "200" ] || [ -z "$BACKUP_SLUG" ]; then
   exit 1
 fi
 
-logger -t "$LOG_TAG" "Backup uploaded (slug: $BACKUP_SLUG). Triggering full restore..."
+logger -t "$LOG_TAG" "Backup uploaded (slug: $BACKUP_SLUG)."
 
 # -----------------------------------------------
-# Step 2: Trigger full restore via WebSocket API
+# Step 2: Read backup metadata to determine type
+# and build the correct restore payload.
 # -----------------------------------------------
-RESTORE_RESP=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws backup/restore/full \
-  "{\"backup_id\":\"$BACKUP_SLUG\",\"agent_id\":\"hassio.local\"}" 2>&1) || true
+BACKUP_META=$(tar -xf "$RESTORE_FILE" -O ./backup.json 2>/dev/null)
+BACKUP_TYPE=$(echo "$BACKUP_META" | jq -r '.type // "full"' 2>/dev/null)
 
-logger -t "$LOG_TAG" "Restore triggered. Response: $RESTORE_RESP"
-logger -t "$LOG_TAG" "HA will restart automatically. Restore complete."
+if [ "$BACKUP_TYPE" = "partial" ]; then
+  # Build partial restore payload from backup metadata
+  ADDON_SLUGS=$(echo "$BACKUP_META" | jq -c '[.addons[].slug]' 2>/dev/null || echo "[]")
+  FOLDERS=$(echo "$BACKUP_META" | jq -c '.folders // []' 2>/dev/null || echo "[]")
+  HAS_HA=$(echo "$BACKUP_META" | jq -r '.homeassistant // empty' 2>/dev/null)
+
+  RESTORE_DATA="{\"backup_id\":\"$BACKUP_SLUG\",\"agent_id\":\"hassio.local\""
+  if [ -n "$HAS_HA" ]; then
+    RESTORE_DATA="$RESTORE_DATA,\"homeassistant\":true"
+  fi
+  RESTORE_DATA="$RESTORE_DATA,\"addons\":$ADDON_SLUGS,\"folders\":$FOLDERS}"
+
+  logger -t "$LOG_TAG" "Partial backup detected. Restoring: addons=$ADDON_SLUGS folders=$FOLDERS homeassistant=$([ -n "$HAS_HA" ] && echo true || echo false)"
+  RESTORE_CMD="backup/restore/partial"
+else
+  RESTORE_DATA="{\"backup_id\":\"$BACKUP_SLUG\",\"agent_id\":\"hassio.local\"}"
+  logger -t "$LOG_TAG" "Full backup detected. Triggering full restore..."
+  RESTORE_CMD="backup/restore/full"
+fi
+
+# -----------------------------------------------
+# Step 3: Trigger restore via WebSocket API
+# The WebSocket connection will drop when HA
+# restarts – this is expected and not an error.
+# -----------------------------------------------
+RESTORE_RESP=$(python3 "$API_HELPER" "$HA_URL" "$HA_TOKEN" ws "$RESTORE_CMD" \
+  "$RESTORE_DATA" 2>&1) || true
+
+logger -t "$LOG_TAG" "Restore triggered ($RESTORE_CMD). Response: $RESTORE_RESP"
+
+# -----------------------------------------------
+# Step 4: Wait for HA to come back after restore,
+# then re-authenticate and save new refresh token.
+# The old refresh token is invalidated by the
+# restore (auth database is replaced).
+# -----------------------------------------------
+logger -t "$LOG_TAG" "Waiting for HA to restart after restore..."
+sleep 30
+
+for i in $(seq 1 24); do
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HA_URL/api/" 2>/dev/null || echo "000")
+  if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "200" ]; then
+    logger -t "$LOG_TAG" "HA is back (HTTP $HTTP_CODE after ${i}x10s)."
+    break
+  fi
+  sleep 10
+done
+
+# Re-authenticate to get a valid refresh token
+NEW_TOKEN=$(login_and_save_token)
+if [ -n "$NEW_TOKEN" ]; then
+  logger -t "$LOG_TAG" "Re-authentication successful after restore."
+else
+  logger -t "$LOG_TAG" "WARNING: Could not re-authenticate after restore. Run login manually to update refresh token."
+fi
+
+logger -t "$LOG_TAG" "Restore complete. HA should be fully operational."

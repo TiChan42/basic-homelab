@@ -69,6 +69,10 @@
     - item in ha_tokens
     - ha_proxy_config_needed | bool
   no_log: true
+  # The restart causes HA to drop the WebSocket connection immediately,
+  # which makes ha_supervisor_api.py exit non-zero – this is expected.
+  # The next task verifies HA comes back up.
+  failed_when: false
 
 - name: Wait for HA to become available after restart
   uri:
