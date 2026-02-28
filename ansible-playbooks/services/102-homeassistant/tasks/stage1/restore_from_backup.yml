@@ -24,6 +24,14 @@
     ha_restored_from_backup: false
 
 # ------------------------------------------------------------------
+# Ensure ha_initial_ips maps to current (static) IP
+# ------------------------------------------------------------------
+- name: Update ha_initial_ips to static IPs
+  ansible.builtin.set_fact:
+    ha_initial_ips: "{{ ha_initial_ips | default({}) | combine({item: hostvars[item]['ansible_host']}) }}"
+  loop: "{{ groups['homeassistant'] }}"
+
+# ------------------------------------------------------------------
 # Pre-flight: should we attempt a restore?
 # ------------------------------------------------------------------
 - name: Check current HA entity count (overwrite protection)

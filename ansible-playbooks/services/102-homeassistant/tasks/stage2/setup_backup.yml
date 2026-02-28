@@ -1,0 +1,151 @@
+---
+# ==============================================================================
+# Tasks: Setup HA Backup & Restore Infrastructure
+# ==============================================================================
+# Deploys backup & restore scripts to the Proxmox host, saves a refresh
+# token for headless API access, and creates a cron job for automated
+# daily backups to NAS.
+#
+# Idempotent: Safe to run on every playbook execution.
+#
+# Modules used:
+#   - ansible.builtin.uri        (login flow for refresh token)
+#   - ansible.builtin.copy       (save refresh token)
+#   - ansible.builtin.template   (deploy scripts)
+#   - ansible.builtin.file       (ensure NAS dirs)
+#   - ansible.builtin.cron       (automated backup)
+# ==============================================================================
+
+# ------------------------------------------------------------------
+# Obtain and save a refresh token for headless backup scripts
+# ------------------------------------------------------------------
+- name: Initiate login flow to obtain backup refresh token
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/auth/login_flow"
+    method: POST
+    body_format: json
+    body:
+      client_id: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/"
+      handler:
+        - "homeassistant"
+        - null
+      redirect_uri: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/"
+    status_code: [200]
+    timeout: 30
+  register: backup_login_flow
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Submit admin credentials for backup refresh token
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port }}/auth/login_flow/{{ item.json.flow_id }}"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ ha_admin_user }}"
+      password: "{{ ha_admin_password }}"
+      client_id: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port }}/"
+    status_code: [200]
+    timeout: 30
+  register: backup_login_result
+  no_log: true
+  loop: "{{ backup_login_flow.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+
+- name: Exchange auth code for refresh token
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item.item.item]['ansible_host'] }}:{{ ha_port }}/auth/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: authorization_code
+      code: "{{ item.json.result }}"
+      client_id: "http://{{ hostvars[item.item.item]['ansible_host'] }}:{{ ha_port }}/"
+    status_code: [200]
+    timeout: 30
+  register: backup_token_response
+  no_log: true
+  loop: "{{ backup_login_result.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+
+- name: Save refresh token for headless backup/restore scripts
+  ansible.builtin.copy:
+    dest: "{{ ha_refresh_token_file }}"
+    content: "{{ item.json.refresh_token }}"
+    mode: '0600'
+    owner: root
+    group: root
+  loop: "{{ backup_token_response.results }}"
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.json.refresh_token is defined
+
+- name: Verify refresh token file exists
+  ansible.builtin.stat:
+    path: "{{ ha_refresh_token_file }}"
+  register: refresh_token_stat
+
+- name: Fail if refresh token could not be saved
+  ansible.builtin.fail:
+    msg: "Refresh token file not created at {{ ha_refresh_token_file }}"
+  when: not (refresh_token_stat.stat.exists | default(false))
+
+# ------------------------------------------------------------------
+# Deploy backup & restore scripts from templates
+# ------------------------------------------------------------------
+- name: Deploy HA backup script
+  ansible.builtin.template:
+    src: templates/ha_backup.sh.j2
+    dest: "{{ ha_backup_script_path }}"
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Deploy HA restore script
+  ansible.builtin.template:
+    src: templates/ha_restore.sh.j2
+    dest: "{{ ha_restore_script_path }}"
+    mode: '0755'
+    owner: root
+    group: root
+
+# ------------------------------------------------------------------
+# Ensure NAS backup directory structure exists
+# ------------------------------------------------------------------
+- name: Ensure NAS backup directory for HA exists
+  ansible.builtin.file:
+    path: "{{ nas_backup_mount }}/homeassistant/homeassistant"
+    state: directory
+    mode: '0750'
+    owner: root
+    group: root
+
+# ------------------------------------------------------------------
+# Cron: Automated daily backup to NAS
+# ------------------------------------------------------------------
+- name: Setup automated HA backup cron job
+  ansible.builtin.cron:
+    name: "HA daily backup to NAS"
+    minute: "{{ ha_backup_cron_minute }}"
+    hour: "{{ ha_backup_cron_hour }}"
+    job: "{{ ha_backup_script_path }} >> /var/log/ha_backup.log 2>&1"
+    user: root
+    state: present
+
+- name: Show Stage 2 summary
+  ansible.builtin.debug:
+    msg: >-
+      Backup infrastructure deployed:
+      backup={{ ha_backup_script_path }},
+      restore={{ ha_restore_script_path }},
+      cron={{ ha_backup_cron_hour }}:{{ ha_backup_cron_minute }},
+      NAS={{ nas_backup_mount }}/homeassistant/homeassistant

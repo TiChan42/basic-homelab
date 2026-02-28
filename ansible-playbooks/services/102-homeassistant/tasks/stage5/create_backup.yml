@@ -1,0 +1,62 @@
+---
+# ==============================================================================
+# Tasks: Create Initial HA Backup
+# ==============================================================================
+# Creates a full backup via HA's Supervisor API and downloads it to NAS.
+# This ensures a NAS backup exists immediately after setup, so destructive
+# re-provisioning can restore from it.
+#
+# Uses the deployed ha_backup.sh script (from Stage 2).
+# ==============================================================================
+
+- name: Check if NAS mount is available
+  ansible.builtin.command: mountpoint -q {{ nas_mount }}
+  register: nas_mount_check
+  changed_when: false
+  failed_when: false
+
+- name: Fail if NAS is not mounted
+  ansible.builtin.fail:
+    msg: "NAS not mounted at {{ nas_mount }} – cannot create backup."
+  when: nas_mount_check.rc != 0
+
+- name: Check if backup script is deployed
+  ansible.builtin.stat:
+    path: "{{ ha_backup_script_path }}"
+  register: backup_script_stat
+
+- name: Fail if backup script not found
+  ansible.builtin.fail:
+    msg: "Backup script not found at {{ ha_backup_script_path }}. Run Stage 2 first."
+  when: not (backup_script_stat.stat.exists | default(false))
+
+- name: Create initial full HA backup to NAS
+  ansible.builtin.command:
+    cmd: "{{ ha_backup_script_path }}"
+  register: initial_backup
+  changed_when: true
+  timeout: 600
+
+- name: Show backup script output
+  ansible.builtin.debug:
+    msg: "{{ initial_backup.stdout_lines | default([]) }}"
+  when: initial_backup.stdout_lines | default([]) | length > 0
+
+- name: Verify backup file exists on NAS
+  ansible.builtin.stat:
+    path: "{{ nas_backup_mount }}/homeassistant/homeassistant/ha_backup.0.tar"
+  register: backup_file_check
+
+- name: Validate backup file
+  ansible.builtin.assert:
+    that:
+      - backup_file_check.stat.exists | default(false)
+      - backup_file_check.stat.size | default(0) | int >= ha_backup_min_size | int
+    fail_msg: >-
+      Backup validation failed – file missing or too small
+      ({{ backup_file_check.stat.size | default(0) }} bytes,
+      minimum {{ ha_backup_min_size }} bytes).
+    success_msg: >-
+      Initial backup created successfully
+      ({{ backup_file_check.stat.size | default(0) | int // 1024 }} KB)
+      at {{ nas_backup_mount }}/homeassistant/homeassistant/ha_backup.0.tar

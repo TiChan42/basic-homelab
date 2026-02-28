@@ -27,8 +27,8 @@
 # Implementation milestones (Stufen):
 #   Stufe 1: VM + Onboarding + Static IP                ✅
 #   Stufe 2: Core config, users, reverse proxy           ✅
-#   Stufe 3: Addons (Z2M, Matter) + MQTT                 ← current
-#   Stufe 4: Backup & Restore                            planned
+#   Stufe 3: Addons (Z2M, Matter) + MQTT                 ✅
+#   Stufe 4: Backup & Restore                            ← current
 #
 # Modules used:
 #   - community.proxmox.proxmox_kvm   – VM creation, start/stop
@@ -151,11 +151,33 @@
         - item.skipped is not defined or not item.skipped
         - item.status is defined and item.status == 200
 
+    # --- Optional restore from NAS backup ---
+    - name: Restore from NAS backup (if available)
+      include_tasks: tasks/stage1/restore_from_backup.yml
+
+
+# ╔════════════════════════════════════════════════════════════╗
+# ║  STAGE 2 – Backup & Restore Infrastructure               ║
+# ╚════════════════════════════════════════════════════════════╝
+
+- name: "Stage 2: Deploy backup infrastructure"
+  hosts: localhost
+  become: yes
+  gather_facts: no
+  tags: [stage2, backup]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+  vars:
+    ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
+
+  tasks:
+    - name: Setup backup & restore scripts
+      include_tasks: tasks/stage2/setup_backup.yml
+
 
 # ╔════════════════════════════════════════════════════════════╗
 # ║  STAGE 3 – HA Configuration                              ║
 # ╚════════════════════════════════════════════════════════════╝
-# (Stages 2, 4, 5 will be added in later Stufen)
 
 - name: "Stage 3: Configure Home Assistant"
   hosts: localhost
@@ -218,3 +240,22 @@
       when:
         - item.skipped is not defined or not item.skipped
         - item.status is defined and item.status == 200
+
+
+# ╔════════════════════════════════════════════════════════════╗
+# ║  STAGE 5 – Create Backup                                 ║
+# ╚════════════════════════════════════════════════════════════╝
+
+- name: "Stage 5: Create full HA backup to NAS"
+  hosts: localhost
+  become: yes
+  gather_facts: no
+  tags: [stage5, backup]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+  vars:
+    ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
+
+  tasks:
+    - name: Create initial backup
+      include_tasks: tasks/stage5/create_backup.yml
