@@ -1,0 +1,315 @@
+---
+# ==============================================================================
+# Tasks: Install Home Assistant Addons (Zigbee2MQTT + Matter Server)
+# ==============================================================================
+# Installs and configures:
+#   1. Zigbee2MQTT – via community addon repository
+#   2. Matter Server – official core addon
+#
+# Idempotent: checks addon status before installing/starting.
+# Uses ha_supervisor_api.py for Supervisor API calls via WebSocket.
+# ==============================================================================
+
+# ------------------------------------------------------------------
+# Variables
+# ------------------------------------------------------------------
+- name: Set addon slugs and repository
+  ansible.builtin.set_fact:
+    z2m_repository: "https://github.com/zigbee2mqtt/hassio-zigbee2mqtt"
+    z2m_slug: "45df7312_zigbee2mqtt"
+    matter_slug: "core_matter_server"
+
+# ╔════════════════════════════════════════════════════════════╗
+# ║  Zigbee2MQTT                                              ║
+# ╚════════════════════════════════════════════════════════════╝
+
+# --- Add community repository for Z2M ---
+- name: Get current addon repositories
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        GET /store
+  register: store_info
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Check if Z2M repository is already added
+  ansible.builtin.set_fact:
+    z2m_repo_present: >-
+      {{ store_info.results
+         | selectattr('stdout', 'defined')
+         | map(attribute='stdout')
+         | map('from_json')
+         | map(attribute='repositories', default=[])
+         | flatten
+         | selectattr('url', 'defined')
+         | selectattr('url', 'equalto', z2m_repository)
+         | list
+         | length > 0 }}
+
+- name: Add Zigbee2MQTT addon repository
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        POST /store/repositories
+        '{"repository": "{{ z2m_repository }}"}'
+  register: add_repo
+  changed_when: true
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (z2m_repo_present | bool)
+
+- name: Wait for addon store to refresh after adding repository
+  ansible.builtin.pause:
+    seconds: 10
+  when: not (z2m_repo_present | bool)
+
+# --- Install Zigbee2MQTT addon ---
+- name: Check if Zigbee2MQTT addon is installed
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        GET /addons/{{ z2m_slug }}/info
+  register: z2m_info
+  changed_when: false
+  failed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Determine Z2M addon state
+  ansible.builtin.set_fact:
+    z2m_installed: >-
+      {{ z2m_info.results
+         | selectattr('rc', 'defined')
+         | selectattr('rc', 'equalto', 0)
+         | list | length > 0 }}
+    z2m_running: >-
+      {{ z2m_info.results
+         | selectattr('rc', 'defined')
+         | selectattr('rc', 'equalto', 0)
+         | selectattr('stdout', 'defined')
+         | map(attribute='stdout')
+         | map('from_json')
+         | selectattr('state', 'defined')
+         | selectattr('state', 'equalto', 'started')
+         | list | length > 0 }}
+
+- name: Install Zigbee2MQTT addon
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        POST /addons/{{ z2m_slug }}/install
+  register: z2m_install
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (z2m_installed | bool)
+
+- name: Wait for Z2M addon installation to complete
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        GET /addons/{{ z2m_slug }}/info
+  register: z2m_install_check
+  retries: 30
+  delay: 10
+  until:
+    - z2m_install_check.rc == 0
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (z2m_installed | bool)
+
+# --- Configure Zigbee2MQTT addon ---
+- name: Configure Zigbee2MQTT addon options
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        POST /addons/{{ z2m_slug }}/options
+        '{{ z2m_options | to_json }}'
+  vars:
+    z2m_options:
+      options:
+        mqtt:
+          server: "mqtt://{{ ha_z2m_mqtt_broker_ip }}:{{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') }}"
+          user: "{{ ha_z2m_mqtt_user }}"
+          password: "{{ ha_z2m_mqtt_password }}"
+        serial:
+          port: "{{ ha_z2m_serial_port }}"
+          adapter: "{{ ha_z2m_serial_adapter }}"
+  register: z2m_config
+  changed_when: z2m_config.rc == 0
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+
+# --- Start Zigbee2MQTT addon ---
+- name: Start Zigbee2MQTT addon
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        POST /addons/{{ z2m_slug }}/start
+  register: z2m_start
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (z2m_running | bool)
+
+- name: Enable Zigbee2MQTT auto-start on boot
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        POST /addons/{{ z2m_slug }}/options
+        '{"boot": "auto"}'
+  changed_when: true
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+# ╔════════════════════════════════════════════════════════════╗
+# ║  Matter Server                                            ║
+# ╚════════════════════════════════════════════════════════════╝
+
+- name: Check if Matter Server addon is installed
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        GET /addons/{{ matter_slug }}/info
+  register: matter_info
+  changed_when: false
+  failed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Determine Matter addon state
+  ansible.builtin.set_fact:
+    matter_installed: >-
+      {{ matter_info.results
+         | selectattr('rc', 'defined')
+         | selectattr('rc', 'equalto', 0)
+         | list | length > 0 }}
+    matter_running: >-
+      {{ matter_info.results
+         | selectattr('rc', 'defined')
+         | selectattr('rc', 'equalto', 0)
+         | selectattr('stdout', 'defined')
+         | map(attribute='stdout')
+         | map('from_json')
+         | selectattr('state', 'defined')
+         | selectattr('state', 'equalto', 'started')
+         | list | length > 0 }}
+
+- name: Install Matter Server addon
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        POST /addons/{{ matter_slug }}/install
+  register: matter_install
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (matter_installed | bool)
+
+- name: Wait for Matter Server addon installation to complete
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        GET /addons/{{ matter_slug }}/info
+  register: matter_install_check
+  retries: 30
+  delay: 10
+  until:
+    - matter_install_check.rc == 0
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (matter_installed | bool)
+
+# --- Start Matter Server addon ---
+- name: Start Matter Server addon
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        POST /addons/{{ matter_slug }}/start
+  register: matter_start
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (matter_running | bool)
+
+- name: Enable Matter Server auto-start on boot
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        POST /addons/{{ matter_slug }}/options
+        '{"boot": "auto"}'
+  changed_when: true
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+# ╔════════════════════════════════════════════════════════════╗
+# ║  Verify Addons                                            ║
+# ╚════════════════════════════════════════════════════════════╝
+
+- name: Wait for addons to start
+  ansible.builtin.pause:
+    seconds: 15
+
+- name: Verify Zigbee2MQTT addon is running
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        GET /addons/{{ z2m_slug }}/info
+  register: z2m_verify
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Verify Matter Server addon is running
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        GET /addons/{{ matter_slug }}/info
+  register: matter_verify
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Show addon status
+  ansible.builtin.debug:
+    msg: >-
+      Addons – Z2M: {{ (z2m_verify.results[0].stdout | from_json).state | default('unknown') }},
+      Matter: {{ (matter_verify.results[0].stdout | from_json).state | default('unknown') }}

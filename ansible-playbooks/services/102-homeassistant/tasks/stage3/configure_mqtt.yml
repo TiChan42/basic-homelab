@@ -1,0 +1,155 @@
+---
+# ==============================================================================
+# Tasks: Configure MQTT integration in Home Assistant
+# ==============================================================================
+# Sets up the connection to the external Mosquitto broker (CT 101).
+# Idempotent: skips if MQTT integration is already configured.
+#
+# Uses HA REST API config flow:
+#   1. Check if mqtt config entry exists
+#   2. Start config flow (handler: mqtt)
+#   3. Select 'broker' option from menu
+#   4. Submit broker connection details
+# ==============================================================================
+
+# ------------------------------------------------------------------
+# Check if MQTT integration is already configured
+# ------------------------------------------------------------------
+- name: Check existing MQTT config entries
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/entry"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    status_code: [200]
+    timeout: 10
+  register: mqtt_config_entries
+  failed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Determine if MQTT is already configured
+  ansible.builtin.set_fact:
+    ha_mqtt_configured: >-
+      {{ mqtt_config_entries.results
+         | selectattr('status', 'defined')
+         | selectattr('status', 'equalto', 200)
+         | map(attribute='json')
+         | flatten
+         | selectattr('domain', 'defined')
+         | selectattr('domain', 'equalto', 'mqtt')
+         | list
+         | length > 0 }}
+
+- name: Skip MQTT configuration (already set up)
+  ansible.builtin.debug:
+    msg: "MQTT integration is already configured – skipping."
+  when: ha_mqtt_configured | bool
+
+# ------------------------------------------------------------------
+# Configure MQTT integration (only if not yet configured)
+# ------------------------------------------------------------------
+- name: Start MQTT config flow
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/flow"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    body_format: json
+    body:
+      handler: mqtt
+      show_advanced_options: false
+    status_code: [200]
+    timeout: 30
+  register: mqtt_flow
+  failed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (ha_mqtt_configured | bool)
+
+- name: Select 'broker' option in MQTT config flow menu
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/flow/{{ item.json.flow_id }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item.item] }}"
+    body_format: json
+    body:
+      next_step_id: broker
+    status_code: [200]
+    timeout: 30
+  register: mqtt_broker_step
+  failed_when: false
+  when:
+    - not (ha_mqtt_configured | bool)
+    - item.status is defined and item.status == 200
+    - item.json.type | default('') == 'menu'
+    - item.item in ha_tokens
+  loop: "{{ mqtt_flow.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Submit MQTT broker configuration
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item.item.item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/flow/{{ item.json.flow_id }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item.item.item] }}"
+    body_format: json
+    body:
+      broker: "{{ ha_z2m_mqtt_broker_ip }}"
+      port: "{{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') | int }}"
+      username: "{{ ha_z2m_mqtt_user }}"
+      password: "{{ ha_z2m_mqtt_password }}"
+    status_code: [200]
+    timeout: 30
+  register: mqtt_submit
+  when:
+    - not (ha_mqtt_configured | bool)
+    - item.status is defined and item.status == 200
+    - item.item.item in ha_tokens
+  no_log: true
+  loop: "{{ mqtt_broker_step.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.item | default('unknown') }}"
+
+# ------------------------------------------------------------------
+# Handle case where flow goes directly to form (no menu step)
+# ------------------------------------------------------------------
+- name: Submit MQTT broker configuration (direct flow – no menu)
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/flow/{{ item.json.flow_id }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item.item] }}"
+    body_format: json
+    body:
+      broker: "{{ ha_z2m_mqtt_broker_ip }}"
+      port: "{{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') | int }}"
+      username: "{{ ha_z2m_mqtt_user }}"
+      password: "{{ ha_z2m_mqtt_password }}"
+    status_code: [200]
+    timeout: 30
+  register: mqtt_submit_direct
+  when:
+    - not (ha_mqtt_configured | bool)
+    - item.status is defined and item.status == 200
+    - item.json.type | default('') == 'form'
+    - item.item in ha_tokens
+  no_log: true
+  loop: "{{ mqtt_flow.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Flag reboot needed (MQTT configured)
+  ansible.builtin.set_fact:
+    ha_reboot_needed: true
+  when: not (ha_mqtt_configured | bool)
+
+- name: Show MQTT configuration result
+  ansible.builtin.debug:
+    msg: >-
+      MQTT integration {{ 'was already configured' if (ha_mqtt_configured | bool)
+      else 'configured – broker ' + ha_z2m_mqtt_broker_ip + ':' +
+      (hostvars['mqtt-broker']['service_backend_port'] | default('1883')) }}

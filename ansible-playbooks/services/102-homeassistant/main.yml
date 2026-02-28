@@ -26,8 +26,8 @@
 #
 # Implementation milestones (Stufen):
 #   Stufe 1: VM + Onboarding + Static IP                ✅
-#   Stufe 2: Core config, users, reverse proxy           ← current
-#   Stufe 3: Addons (Z2M, Matter) + MQTT                 planned
+#   Stufe 2: Core config, users, reverse proxy           ✅
+#   Stufe 3: Addons (Z2M, Matter) + MQTT                 ← current
 #   Stufe 4: Backup & Restore                            planned
 #
 # Modules used:
@@ -176,6 +176,12 @@
 
     - name: Configure reverse proxy (trusted_proxies)
       include_tasks: tasks/stage3/configure_reverse_proxy.yml
+
+    - name: Install addons (Zigbee2MQTT + Matter Server)
+      include_tasks: tasks/stage3/install_addons.yml
+
+    - name: Configure MQTT integration
+      include_tasks: tasks/stage3/configure_mqtt.yml
 
     - name: Reboot HA and run healthcheck
       include_tasks: tasks/stage3/reboot_and_healthcheck.yml
