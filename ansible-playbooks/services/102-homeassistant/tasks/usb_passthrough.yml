@@ -6,8 +6,7 @@
 # as passthrough devices on the HA VM via the Proxmox API.
 #
 # Modules used:
-#   - community.proxmox.proxmox_kvm  (update VM USB config)
-#   - ansible.builtin.command         (lsusb – no module equivalent)
+#   - ansible.builtin.command         (lsusb, qm set – API token lacks USB perms)
 #
 # Expects module_defaults for group/community.proxmox.proxmox to be set.
 # ==============================================================================
@@ -49,17 +48,20 @@
     index_var: idx
   when: ha_usb_final_devices | length > 0
 
-- name: Apply USB passthrough to HA VM via Proxmox API
-  community.proxmox.proxmox_kvm:
-    vmid: "{{ hostvars[item]['service_id'] }}"
-    node: "{{ proxmox_node }}"
-    usb: "{{ _usb_passthrough }}"
-    update: true
-    update_unsafe: true
+# NOTE: The Proxmox API forbids setting real USB device passthrough with token auth
+# ("only root can set 'usb0' config for real devices"). Fall back to qm set.
+- name: Apply USB passthrough to HA VM via qm set
+  ansible.builtin.command: >-
+    qm set {{ hostvars[item]['service_id'] }}
+    {% for key, val in _usb_passthrough.items() %}
+    --{{ key }} {{ val }}{{ ' ' if not loop.last else '' }}
+    {% endfor %}
   loop: "{{ groups['homeassistant'] }}"
   when:
     - _usb_passthrough is defined
     - _usb_passthrough | length > 0
+  register: usb_set_result
+  changed_when: "'update VM' in usb_set_result.stdout"
 
 - name: Warn if no USB devices found and none manually specified
   ansible.builtin.debug:
