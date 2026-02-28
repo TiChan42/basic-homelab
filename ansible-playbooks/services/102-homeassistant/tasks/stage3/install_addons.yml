@@ -119,20 +119,17 @@
         POST /addons/{{ z2m_slug }}/install
         --timeout 180
   register: z2m_install
-  failed_when: false
+  retries: 6
+  delay: 30
+  until: >-
+    z2m_install.rc == 0
+    or 'already installed' in (z2m_install.stderr | default(''))
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
     - not (z2m_installed | bool)
 
-- name: Show Z2M install result
-  ansible.builtin.debug:
-    msg: >-
-      Z2M install – rc={{ z2m_install.results[0].rc | default('skipped') }},
-      stderr={{ z2m_install.results[0].stderr | default('') | truncate(200) }}
-  when: z2m_install.results[0].rc is defined
-
-- name: Wait for Z2M addon installation to complete
+- name: Verify Z2M addon installation
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -140,12 +137,14 @@
         {{ ha_tokens[item] }}
         GET /addons/{{ z2m_slug }}/info
   register: z2m_install_check
-  retries: 30
+  retries: 12
   delay: 10
   until:
     - z2m_install_check.rc == 0
     - (z2m_install_check.stdout | from_json).get('version', None) is not none
   changed_when: false
+  failed_when:
+    - z2m_install_check.rc != 0 or (z2m_install_check.stdout | from_json).get('version', None) is none
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
@@ -212,6 +211,11 @@
 # ║  Matter Server                                            ║
 # ╚════════════════════════════════════════════════════════════╝
 
+- name: Wait for Supervisor to settle after Z2M operations
+  ansible.builtin.pause:
+    seconds: 15
+  when: not (z2m_installed | bool)
+
 - name: Check if Matter Server addon is installed
   ansible.builtin.command:
     cmd: >-
@@ -260,20 +264,17 @@
         POST /addons/{{ matter_slug }}/install
         --timeout 180
   register: matter_install
-  failed_when: false
+  retries: 6
+  delay: 30
+  until: >-
+    matter_install.rc == 0
+    or 'already installed' in (matter_install.stderr | default(''))
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
     - not (matter_installed | bool)
 
-- name: Show Matter install result
-  ansible.builtin.debug:
-    msg: >-
-      Matter install – rc={{ matter_install.results[0].rc | default('skipped') }},
-      stderr={{ matter_install.results[0].stderr | default('') | truncate(200) }}
-  when: matter_install.results[0].rc is defined
-
-- name: Wait for Matter Server addon installation to complete
+- name: Verify Matter Server addon installation
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -281,12 +282,14 @@
         {{ ha_tokens[item] }}
         GET /addons/{{ matter_slug }}/info
   register: matter_install_check
-  retries: 30
+  retries: 12
   delay: 10
   until:
     - matter_install_check.rc == 0
     - (matter_install_check.stdout | from_json).get('version', None) is not none
   changed_when: false
+  failed_when:
+    - matter_install_check.rc != 0 or (matter_install_check.stdout | from_json).get('version', None) is none
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
