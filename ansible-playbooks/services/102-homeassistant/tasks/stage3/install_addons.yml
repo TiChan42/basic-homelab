@@ -93,8 +93,7 @@
          | selectattr('stdout', 'defined')
          | map(attribute='stdout')
          | map('from_json')
-         | selectattr('installed', 'defined')
-         | selectattr('installed', 'equalto', true)
+         | rejectattr('version', 'none')
          | list | length > 0 }}
     z2m_running: >-
       {{ z2m_info.results
@@ -107,6 +106,10 @@
          | selectattr('state', 'equalto', 'started')
          | list | length > 0 }}
 
+- name: Show Z2M addon state
+  ansible.builtin.debug:
+    msg: "Z2M – installed: {{ z2m_installed }}, running: {{ z2m_running }}"
+
 - name: Install Zigbee2MQTT addon
   ansible.builtin.command:
     cmd: >-
@@ -115,6 +118,9 @@
         {{ ha_tokens[item] }}
         POST /addons/{{ z2m_slug }}/install
   register: z2m_install
+  failed_when:
+    - z2m_install.rc != 0
+    - "'already installed' not in (z2m_install.stderr | default(''))"
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
@@ -128,10 +134,11 @@
         {{ ha_tokens[item] }}
         GET /addons/{{ z2m_slug }}/info
   register: z2m_install_check
-  retries: 30
+  retries: 60
   delay: 10
   until:
     - z2m_install_check.rc == 0
+    - (z2m_install_check.stdout | from_json).get('version', None) is not none
   changed_when: false
   loop: "{{ groups['homeassistant'] }}"
   when:
@@ -150,6 +157,13 @@
   vars:
     z2m_options:
       options:
+        data_path: "/config/zigbee2mqtt"
+        socat:
+          enabled: false
+          master: "pty,raw,echo=0,link=/tmp/ttyZ2M,mode=777"
+          slave: "tcp-listen:8485,keepalive,nodelay,reuseaddr,keepidle=1,keepintvl=1,keepcnt=5"
+          options: "-d -d"
+          log: false
         mqtt:
           server: "mqtt://{{ ha_z2m_mqtt_broker_ip }}:{{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') }}"
           user: "{{ ha_z2m_mqtt_user }}"
@@ -215,8 +229,7 @@
          | selectattr('stdout', 'defined')
          | map(attribute='stdout')
          | map('from_json')
-         | selectattr('installed', 'defined')
-         | selectattr('installed', 'equalto', true)
+         | rejectattr('version', 'none')
          | list | length > 0 }}
     matter_running: >-
       {{ matter_info.results
@@ -229,6 +242,10 @@
          | selectattr('state', 'equalto', 'started')
          | list | length > 0 }}
 
+- name: Show Matter addon state
+  ansible.builtin.debug:
+    msg: "Matter – installed: {{ matter_installed }}, running: {{ matter_running }}"
+
 - name: Install Matter Server addon
   ansible.builtin.command:
     cmd: >-
@@ -237,6 +254,9 @@
         {{ ha_tokens[item] }}
         POST /addons/{{ matter_slug }}/install
   register: matter_install
+  failed_when:
+    - matter_install.rc != 0
+    - "'already installed' not in (matter_install.stderr | default(''))"
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
@@ -250,10 +270,11 @@
         {{ ha_tokens[item] }}
         GET /addons/{{ matter_slug }}/info
   register: matter_install_check
-  retries: 30
+  retries: 60
   delay: 10
   until:
     - matter_install_check.rc == 0
+    - (matter_install_check.stdout | from_json).get('version', None) is not none
   changed_when: false
   loop: "{{ groups['homeassistant'] }}"
   when:
