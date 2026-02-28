@@ -3,37 +3,60 @@
 # Playbook: Services – Home Assistant OS (VM)
 # ==============================================================================
 # Staged build – provisions a Proxmox KVM VM running HAOS and configures
-# it step-by-step through multiple stages.
+# it step-by-step through 5 stages.
 #
-# Stages:
-#   1. VM + Onboarding + Static IP            (tasks/stage1/)
-#   2. Core config, users, reverse proxy       (tasks/stage2/)
-#   3. Add-ons (Z2M, Matter) + MQTT           (tasks/stage3/)  – planned
-#   4. Backup & Restore                        (tasks/stage4/)  – planned
+# Stage Layout (folders):
+#   1. Provisioning + Restore          (tasks/stage1/)
+#      VM lifecycle, onboarding, static IP, optional NAS restore.
+#      Skipped when VM is healthy + correct HAOS version.
 #
-# Modules used (community.proxmox):
-#   - proxmox_kvm   – VM creation, start/stop
-#   - proxmox_disk  – disk resize
+#   2. Backup Strategy                 (tasks/stage2/)
+#      Deploy backup/restore scripts + cron.  Idempotent, always runs.
+#
+#   3. HA Configuration                (tasks/stage3/)
+#      Core config, users, addons, MQTT, reverse proxy.
+#      Idempotent – skips anything already configured (incl. from restore).
+#
+#   4. Integration Tests               (tasks/stage4/)
+#      ALWAYS runs – validates all HA functions via API & curl.
+#      Attempts small repairs when possible.
+#
+#   5. Backup Creation                 (tasks/stage5/)
+#      Creates a fresh backup only if Stage 4 reports healthy.
+#
+# Implementation milestones (Stufen):
+#   Stufe 1: VM + Onboarding + Static IP                ✅
+#   Stufe 2: Core config, users, reverse proxy           ← current
+#   Stufe 3: Addons (Z2M, Matter) + MQTT                 planned
+#   Stufe 4: Backup & Restore                            planned
+#
+# Modules used:
+#   - community.proxmox.proxmox_kvm   – VM creation, start/stop
+#   - community.proxmox.proxmox_disk  – disk resize
+#   - ansible.builtin.uri             – HA REST API
+#   - ha_supervisor_api.py            – HA Supervisor WebSocket API
 #
 # Inventory requirements (group 'homeassistant'):
 #   - service_id, service_name, ansible_host, service_backend_port
 # ==============================================================================
 
-# ============================================================
-# PLAY 1 – Provision the HAOS VM on the Proxmox host
-# ============================================================
-- name: Provision Home Assistant OS VM
+
+# ╔════════════════════════════════════════════════════════════╗
+# ║  STAGE 1 – Provisioning + Restore                        ║
+# ╚════════════════════════════════════════════════════════════╝
+
+# --- Play 1a: Provision the HAOS VM on the Proxmox host ---
+- name: "Stage 1a: Provision Home Assistant OS VM"
   hosts: localhost
   become: yes
   gather_facts: yes
-  tags: [provision]
+  tags: [stage1, provision]
   collections:
     - community.proxmox
   vars_files:
     - "../../inventory/group_vars/all.yml"
   vars:
     ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
-    # Numeric GiB value for proxmox_disk resize (strip 'G' suffix from ha_vm_disk_size)
     ha_vm_disk_size_gib: "{{ ha_vm_disk_size | regex_replace('[^0-9]', '') }}"
 
   module_defaults:
@@ -73,27 +96,31 @@
       include_tasks: tasks/stage1/detect_and_wait.yml
 
 
-# ============================================================
-# PLAY 2 – Onboard & assign static IP
-# ============================================================
-- name: Configure Home Assistant (Stage 1)
+# --- Play 1b: Onboard, static IP, optional restore ---
+- name: "Stage 1b: Onboard & configure network"
   hosts: localhost
   become: yes
   gather_facts: no
-  tags: [configure]
+  tags: [stage1, configure]
   vars_files:
     - "../../inventory/group_vars/all.yml"
   vars:
     ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
 
   tasks:
+    - name: Deploy Supervisor API helper to host
+      ansible.builtin.copy:
+        src: files/ha_supervisor_api.py
+        dest: /usr/local/bin/ha_supervisor_api.py
+        mode: '0755'
+
     - name: Complete onboarding and authenticate
       include_tasks: tasks/stage1/onboarding.yml
 
     - name: Configure static IP address
       include_tasks: tasks/stage1/configure_network.yml
 
-    # --- Stage 1 health check: verify HA reachable on static IP ---
+    # --- Stage 1 health check ---
     - name: Verify HA API on static IP
       ansible.builtin.uri:
         url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
@@ -125,37 +152,36 @@
         - item.status is defined and item.status == 200
 
 
-# ============================================================
-# PLAY 3 – Stage 2: Core config, users & reverse proxy
-# ============================================================
-- name: Configure Home Assistant (Stage 2 – Core, Users & Reverse Proxy)
+# ╔════════════════════════════════════════════════════════════╗
+# ║  STAGE 3 – HA Configuration                              ║
+# ╚════════════════════════════════════════════════════════════╝
+# (Stages 2, 4, 5 will be added in later Stufen)
+
+- name: "Stage 3: Configure Home Assistant"
   hosts: localhost
   become: yes
   gather_facts: no
-  tags: [stage2]
+  tags: [stage3]
   vars_files:
     - "../../inventory/group_vars/all.yml"
   vars:
     ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
 
   tasks:
-    - name: Deploy Supervisor API helper to host
-      ansible.builtin.copy:
-        src: files/ha_supervisor_api.py
-        dest: /usr/local/bin/ha_supervisor_api.py
-        mode: '0755'
-
     - name: Configure core settings (timezone, location, etc.)
-      include_tasks: tasks/stage2/configure_core.yml
+      include_tasks: tasks/stage3/configure_core.yml
 
     - name: Create additional HA users
-      include_tasks: tasks/stage2/create_users.yml
+      include_tasks: tasks/stage3/create_users.yml
 
     - name: Configure reverse proxy (trusted_proxies)
-      include_tasks: tasks/stage2/configure_reverse_proxy.yml
+      include_tasks: tasks/stage3/configure_reverse_proxy.yml
 
-    # --- Stage 2 health check ---
-    - name: Verify HA API is healthy after Stage 2
+    - name: Reboot HA and run healthcheck
+      include_tasks: tasks/stage3/reboot_and_healthcheck.yml
+
+    # --- Stage 3 health check ---
+    - name: Verify HA API is healthy after Stage 3
       ansible.builtin.uri:
         url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
         method: GET
@@ -163,24 +189,24 @@
           Authorization: "Bearer {{ ha_tokens[item] }}"
         status_code: [200]
         timeout: 30
-      register: stage2_health
+      register: stage3_health
       retries: 30
       delay: 10
       until:
-        - stage2_health.status is defined
-        - stage2_health.status == 200
+        - stage3_health.status is defined
+        - stage3_health.status == 200
       loop: "{{ groups['homeassistant'] }}"
       when: item in ha_tokens
 
-    - name: Show Stage 2 result
+    - name: Show Stage 3 result
       ansible.builtin.debug:
         msg: >-
-          Stage 2 complete – HA {{ item.json.version }}
+          Stage 3 complete – HA {{ item.json.version }}
           on {{ hostvars[item.item]['ansible_host'] }}:
           timezone={{ item.json.time_zone }},
-          currency={{ item.json.currency }},
-          country={{ item.json.country }}
-      loop: "{{ stage2_health.results }}"
+          country={{ item.json.country }},
+          unit_system={{ item.json.unit_system.length | default('?') }}
+      loop: "{{ stage3_health.results }}"
       loop_control:
         label: "{{ item.item }}"
       when:

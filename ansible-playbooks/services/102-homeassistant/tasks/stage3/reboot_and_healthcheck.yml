@@ -1,0 +1,171 @@
+---
+# ==============================================================================
+# Tasks: Reboot HA Core & Healthcheck (Stage 3)
+# ==============================================================================
+# Restarts HA Core if any configuration changes were made (reverse proxy,
+# core config), then waits for HA to come back and verifies health.
+#
+# The reboot is only triggered when ha_reboot_needed or ha_proxy_config_needed
+# flags are set by previous Stage 3 tasks.
+#
+# Modules used:
+#   - ansible.builtin.shell  (ha_supervisor_api.py for Core restart)
+#   - ansible.builtin.uri    (API health check)
+#   - ansible.builtin.debug
+# ==============================================================================
+
+- name: Determine if HA Core restart is needed
+  ansible.builtin.set_fact:
+    ha_needs_restart: >-
+      {{ (ha_reboot_needed | default(false) | bool) or
+         (ha_proxy_config_needed | default(false) | bool) }}
+
+- name: Show restart decision
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'HA Core restart needed – applying configuration changes.'
+         if ha_needs_restart | bool
+         else 'No restart needed – all configurations already applied.' }}
+
+- name: Restart HA Core via Supervisor API
+  ansible.builtin.shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}"
+    "{{ ha_tokens[item] }}"
+    POST
+    /core/restart
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - ha_needs_restart | bool
+  no_log: true
+  # Core restart drops the WebSocket → non-zero exit expected
+  failed_when: false
+  register: restart_result
+
+- name: Wait for HA to become available after restart
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/"
+    method: GET
+    status_code: [200, 401]
+    timeout: 10
+  register: ha_restart_check
+  retries: 40
+  delay: 10
+  until: ha_restart_check.status is defined and ha_restart_check.status in [200, 401]
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - ha_needs_restart | bool
+
+# ------------------------------------------------------------------
+# Re-authenticate after restart (tokens may have been invalidated)
+# ------------------------------------------------------------------
+- name: Re-authenticate after restart – initiate login flow
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/auth/login_flow"
+    method: POST
+    headers:
+      Origin: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}"
+    body_format: json
+    body:
+      client_id: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/"
+      handler:
+        - homeassistant
+        - null
+      redirect_uri: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/"
+    status_code: [200]
+    timeout: 30
+  register: restart_login_flow
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - ha_needs_restart | bool
+
+- name: Re-authenticate after restart – submit credentials
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port }}/auth/login_flow/{{ item.json.flow_id }}"
+    method: POST
+    headers:
+      Origin: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port }}"
+    body_format: json
+    body:
+      username: "{{ ha_admin_user }}"
+      password: "{{ ha_admin_password }}"
+      client_id: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port }}/"
+    status_code: [200]
+    timeout: 30
+  register: restart_login_result
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+  loop: "{{ restart_login_flow.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Re-authenticate after restart – exchange auth code for tokens
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[_host]['ansible_host'] }}:{{ ha_port }}/auth/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: authorization_code
+      code: "{{ item.json.result }}"
+      client_id: "http://{{ hostvars[_host]['ansible_host'] }}:{{ ha_port }}/"
+    status_code: [200]
+    timeout: 30
+  vars:
+    _host: "{{ item.item.item }}"
+  register: restart_auth_response
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+  loop: "{{ restart_login_result.results }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+
+- name: Update access tokens after restart
+  ansible.builtin.set_fact:
+    ha_tokens: "{{ ha_tokens | combine({ _host: item.json.access_token }) }}"
+  vars:
+    _host: "{{ item.item.item.item }}"
+  loop: "{{ restart_auth_response.results }}"
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+
+# ------------------------------------------------------------------
+# Post-restart health check
+# ------------------------------------------------------------------
+- name: Verify HA API is healthy after restart
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    status_code: [200]
+    timeout: 30
+  register: post_restart_health
+  retries: 15
+  delay: 10
+  until:
+    - post_restart_health.status is defined
+    - post_restart_health.status == 200
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Show post-restart health status
+  ansible.builtin.debug:
+    msg: >-
+      HA {{ item.json.version }} is {{ item.json.state }}
+      on {{ hostvars[item.item]['ansible_host'] }}
+      (timezone={{ item.json.time_zone }}, country={{ item.json.country }})
+  loop: "{{ post_restart_health.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
