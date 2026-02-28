@@ -36,6 +36,20 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in (ha_initial_ips | default({}))
 
+- name: Wait for HA Core to be installed (not just landing page)
+  ansible.builtin.command: >
+    qm guest exec {{ hostvars[item]['service_id'] }} --
+    ha core info
+  register: ha_core_info
+  retries: 60
+  delay: 15
+  until: >
+    ha_core_info.rc == 0 and
+    'landingpage' not in (ha_core_info.stdout | default(''))
+  changed_when: false
+  failed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+
 - name: Wait for Home Assistant API to become available
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/"

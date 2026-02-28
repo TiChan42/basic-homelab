@@ -13,10 +13,10 @@
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/onboarding"
     method: GET
-    status_code: [200, 404]
+    status_code: [200, 401, 404]
     timeout: 10
   register: onboarding_status
-  retries: 30
+  retries: 60
   delay: 10
   until: onboarding_status.status is defined and onboarding_status.status in [200, 404]
   loop: "{{ groups['homeassistant'] }}"
