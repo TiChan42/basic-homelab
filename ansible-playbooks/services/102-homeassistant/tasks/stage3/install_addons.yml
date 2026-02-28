@@ -90,6 +90,11 @@
       {{ z2m_info.results
          | selectattr('rc', 'defined')
          | selectattr('rc', 'equalto', 0)
+         | selectattr('stdout', 'defined')
+         | map(attribute='stdout')
+         | map('from_json')
+         | selectattr('installed', 'defined')
+         | selectattr('installed', 'equalto', true)
          | list | length > 0 }}
     z2m_running: >-
       {{ z2m_info.results
@@ -207,6 +212,11 @@
       {{ matter_info.results
          | selectattr('rc', 'defined')
          | selectattr('rc', 'equalto', 0)
+         | selectattr('stdout', 'defined')
+         | map(attribute='stdout')
+         | map('from_json')
+         | selectattr('installed', 'defined')
+         | selectattr('installed', 'equalto', true)
          | list | length > 0 }}
     matter_running: >-
       {{ matter_info.results
