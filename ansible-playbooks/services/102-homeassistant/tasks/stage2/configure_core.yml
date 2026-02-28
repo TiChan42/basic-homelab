@@ -1,0 +1,95 @@
+---
+# ==============================================================================
+# Tasks: Configure HA Core Settings (Stage 2)
+# ==============================================================================
+# Sets timezone, location, unit system, currency and language via the
+# config/core/update WebSocket command.  This is a PATCH-style operation –
+# running it again with the same values is harmless (idempotent result).
+#
+# Modules used:
+#   - ansible.builtin.uri              (read current config)
+#   - ansible.builtin.shell            (ha_supervisor_api.py ws call)
+#   - ansible.builtin.set_fact / debug
+#
+# Requires: ha_tokens dict (set in Stage 1 onboarding)
+# ==============================================================================
+
+- name: Read current HA core configuration
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    status_code: [200]
+    timeout: 30
+  register: ha_current_config
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Check if core config update is needed
+  ansible.builtin.set_fact:
+    ha_core_update_needed: >-
+      {{ _cfg.time_zone  != ha_timezone
+      or _cfg.currency   != ha_currency
+      or _cfg.unit_system.length | default('') != ha_unit_system
+      or _cfg.country    != ha_country
+      or _cfg.language   != ha_language }}
+  vars:
+    _cfg: "{{ ha_current_config.results | selectattr('json', 'defined') | map(attribute='json') | list | first | default({}) }}"
+
+- name: Show core config status
+  ansible.builtin.debug:
+    msg: "Core configuration {{ 'needs update' if ha_core_update_needed | bool else 'already up-to-date' }}"
+
+- name: Update core configuration via WebSocket API
+  ansible.builtin.shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}"
+    "{{ ha_tokens[item] }}"
+    ws
+    config/core/update
+    '{{ _core_config | to_json }}'
+  vars:
+    _core_config:
+      time_zone: "{{ ha_timezone }}"
+      language: "{{ ha_language }}"
+      country: "{{ ha_country }}"
+      currency: "{{ ha_currency }}"
+      unit_system: "{{ ha_unit_system }}"
+      location_name: "Home"
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - ha_core_update_needed | bool
+  no_log: true
+  register: core_update_result
+  changed_when: core_update_result.rc == 0
+
+- name: Verify core configuration was applied
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    status_code: [200]
+    timeout: 30
+  register: ha_config_verify
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - ha_core_update_needed | bool
+
+- name: Show updated core configuration
+  ansible.builtin.debug:
+    msg: >-
+      Core config: timezone={{ item.json.time_zone }},
+      currency={{ item.json.currency }},
+      unit_system={{ item.json.unit_system.length | default('?') }},
+      country={{ item.json.country }},
+      language={{ item.json.language }}
+  loop: "{{ ha_config_verify.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('n/a') }}"
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.json is defined

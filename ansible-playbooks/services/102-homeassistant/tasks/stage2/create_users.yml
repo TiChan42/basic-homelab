@@ -1,0 +1,94 @@
+---
+# ==============================================================================
+# Tasks: Create Additional HA Users (Stage 2)
+# ==============================================================================
+# Creates the default user (for daily use) and the machine user (for
+# service-to-service API access) via the ha_supervisor_api.py create-user
+# WebSocket helper.
+#
+# Idempotent: if a user already exists, the helper returns exit 0 with
+# {"created": false, "error": "... already exists"}, which we handle
+# gracefully.
+#
+# Modules used:
+#   - ansible.builtin.command  (ha_supervisor_api.py create-user)
+#   - ansible.builtin.debug
+#
+# Requires: ha_tokens dict (set in Stage 1 onboarding)
+# ==============================================================================
+
+# ------------------------------------------------------------------
+# Default user (for daily human use – non-admin)
+# ------------------------------------------------------------------
+- name: "Create default user '{{ default_user }}'"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /usr/local/bin/ha_supervisor_api.py
+      - create-user
+      - --url
+      - "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}"
+      - --token
+      - "{{ ha_tokens[item] }}"
+      - --username
+      - "{{ default_user }}"
+      - --password
+      - "{{ default_password }}"
+      - --display-name
+      - "{{ default_user | capitalize }}"
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+  register: default_user_result
+  changed_when: >-
+    default_user_result.stdout is defined and
+    (default_user_result.stdout | from_json).get('created', false) | bool
+  failed_when:
+    - default_user_result.rc != 0
+    - "'already exists' not in (default_user_result.stdout | default(''))"
+
+- name: Show default user creation result
+  ansible.builtin.debug:
+    msg: "User '{{ default_user }}': {{ item.stdout | default('skipped') }}"
+  loop: "{{ default_user_result.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('n/a') }}"
+  when: item.stdout is defined
+
+# ------------------------------------------------------------------
+# Machine user (for service-to-service API access – non-admin)
+# ------------------------------------------------------------------
+- name: "Create machine user '{{ machine_user }}'"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - /usr/local/bin/ha_supervisor_api.py
+      - create-user
+      - --url
+      - "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}"
+      - --token
+      - "{{ ha_tokens[item] }}"
+      - --username
+      - "{{ machine_user }}"
+      - --password
+      - "{{ machine_password }}"
+      - --display-name
+      - "{{ machine_user | capitalize }}"
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+  no_log: true
+  register: machine_user_result
+  changed_when: >-
+    machine_user_result.stdout is defined and
+    (machine_user_result.stdout | from_json).get('created', false) | bool
+  failed_when:
+    - machine_user_result.rc != 0
+    - "'already exists' not in (machine_user_result.stdout | default(''))"
+
+- name: Show machine user creation result
+  ansible.builtin.debug:
+    msg: "User '{{ machine_user }}': {{ item.stdout | default('skipped') }}"
+  loop: "{{ machine_user_result.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('n/a') }}"
+  when: item.stdout is defined

@@ -2,20 +2,18 @@
 # ==============================================================================
 # Playbook: Services – Home Assistant OS (VM)
 # ==============================================================================
-# Staged build – Stage 1: Bare Minimum
+# Staged build – provisions a Proxmox KVM VM running HAOS and configures
+# it step-by-step through multiple stages.
 #
-# Provisions a Proxmox KVM VM running HAOS, completes onboarding,
-# and configures a static IP.  Nothing else.
-#
-# Stages (planned):
-#   1. VM + Onboarding + Static IP          ← this file
-#   2. Core config, default user, reverse proxy
-#   3. Add-ons (Z2M, Matter) + MQTT integration
-#   4. Backup & Restore
+# Stages:
+#   1. VM + Onboarding + Static IP            (tasks/stage1/)
+#   2. Core config, users, reverse proxy       (tasks/stage2/)
+#   3. Add-ons (Z2M, Matter) + MQTT           (tasks/stage3/)  – planned
+#   4. Backup & Restore                        (tasks/stage4/)  – planned
 #
 # Modules used (community.proxmox):
-#   - proxmox_kvm   – VM creation, start/stop, USB passthrough
-#   - proxmox_disk  – disk import (import_from), resize
+#   - proxmox_kvm   – VM creation, start/stop
+#   - proxmox_disk  – disk resize
 #
 # Inventory requirements (group 'homeassistant'):
 #   - service_id, service_name, ansible_host, service_backend_port
@@ -66,13 +64,13 @@
       changed_when: "'was installed' in collection_install.stdout or 'was upgraded' in collection_install.stdout"
 
     - name: Provision HAOS VM
-      include_tasks: tasks/provision_vm.yml
+      include_tasks: tasks/stage1/provision_vm.yml
 
     - name: Configure USB passthrough
-      include_tasks: tasks/usb_passthrough.yml
+      include_tasks: tasks/stage1/usb_passthrough.yml
 
     - name: Detect VM IP and wait for HA API
-      include_tasks: tasks/detect_and_wait.yml
+      include_tasks: tasks/stage1/detect_and_wait.yml
 
 
 # ============================================================
@@ -90,10 +88,10 @@
 
   tasks:
     - name: Complete onboarding and authenticate
-      include_tasks: tasks/onboarding.yml
+      include_tasks: tasks/stage1/onboarding.yml
 
     - name: Configure static IP address
-      include_tasks: tasks/configure_network.yml
+      include_tasks: tasks/stage1/configure_network.yml
 
     # --- Stage 1 health check: verify HA reachable on static IP ---
     - name: Verify HA API on static IP
@@ -120,6 +118,69 @@
           running on {{ hostvars[item.item]['ansible_host'] }}
           (state: {{ item.json.state }})
       loop: "{{ stage1_health.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - item.skipped is not defined or not item.skipped
+        - item.status is defined and item.status == 200
+
+
+# ============================================================
+# PLAY 3 – Stage 2: Core config, users & reverse proxy
+# ============================================================
+- name: Configure Home Assistant (Stage 2 – Core, Users & Reverse Proxy)
+  hosts: localhost
+  become: yes
+  gather_facts: no
+  tags: [stage2]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+  vars:
+    ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
+
+  tasks:
+    - name: Deploy Supervisor API helper to host
+      ansible.builtin.copy:
+        src: files/ha_supervisor_api.py
+        dest: /usr/local/bin/ha_supervisor_api.py
+        mode: '0755'
+
+    - name: Configure core settings (timezone, location, etc.)
+      include_tasks: tasks/stage2/configure_core.yml
+
+    - name: Create additional HA users
+      include_tasks: tasks/stage2/create_users.yml
+
+    - name: Configure reverse proxy (trusted_proxies)
+      include_tasks: tasks/stage2/configure_reverse_proxy.yml
+
+    # --- Stage 2 health check ---
+    - name: Verify HA API is healthy after Stage 2
+      ansible.builtin.uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        status_code: [200]
+        timeout: 30
+      register: stage2_health
+      retries: 30
+      delay: 10
+      until:
+        - stage2_health.status is defined
+        - stage2_health.status == 200
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
+
+    - name: Show Stage 2 result
+      ansible.builtin.debug:
+        msg: >-
+          Stage 2 complete – HA {{ item.json.version }}
+          on {{ hostvars[item.item]['ansible_host'] }}:
+          timezone={{ item.json.time_zone }},
+          currency={{ item.json.currency }},
+          country={{ item.json.country }}
+      loop: "{{ stage2_health.results }}"
       loop_control:
         label: "{{ item.item }}"
       when:
