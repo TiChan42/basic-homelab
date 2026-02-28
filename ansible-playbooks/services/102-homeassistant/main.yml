@@ -1,45 +1,20 @@
 ---
 # ==============================================================================
-# Playbook: Services - Home Assistant OS (VM)
-# Description: Provisions a Proxmox KVM virtual machine running Home Assistant
-#              Operating System with USB passthrough, Zigbee2MQTT, Matter, and
-#              automated NAS backup/restore.
+# Playbook: Services – Home Assistant OS (VM)
+# ==============================================================================
+# Staged build – Stage 1: Bare Minimum
 #
-# Process:
-# 1. Proxmox VM Provisioning (localhost):
-#    - Downloads the HAOS qcow2 image.
-#    - Creates a UEFI-based KVM VM (q35 machine type).
-#    - Imports the disk image and configures boot.
-#    - Passes through USB devices (e.g. Sonoff Zigbee dongle).
-#    - Starts VM and waits for HA API to become available.
+# Provisions a Proxmox KVM VM running HAOS, completes onboarding,
+# and configures a static IP.  Nothing else.
 #
-# 2. Home Assistant Configuration (localhost → HA API):
-#    - Completes onboarding (creates admin user).
-#    - Attempts restore from NAS backup (if available).
-#      → If restored: skips addon install, core config, MQTT setup.
-#      → Critical: must happen BEFORE any addon starts to preserve
-#        the Zigbee coordinator's paired device list.
-#    - Configures static IP via Supervisor Network API.
-#    - Installs Add-ons: Zigbee2MQTT, Matter Server (fresh install only).
-#    - Configures Zigbee2MQTT to use the external Mosquitto broker.
-#    - Configures MQTT integration in HA.
+# Stages (planned):
+#   1. VM + Onboarding + Static IP          ← this file
+#   2. Core config, default user, reverse proxy
+#   3. Add-ons (Z2M, Matter) + MQTT integration
+#   4. Backup & Restore
 #
-# 3. Backup Concept (localhost cron → HA API → NAS):
-#    - A cron job on the Proxmox host triggers HA backups via the API.
-#    - The backup file is downloaded and stored on the NAS mount.
-#    - Numbered rotation with validation before promotion.
-#
-# Architecture Note – USB Passthrough:
-#   The Sonoff Zigbee USB dongle is passed through to the HA VM,
-#   NOT to the MQTT broker container. The data flow is:
-#     Zigbee Dongle (USB) → Zigbee2MQTT (HA Add-on) → Mosquitto (LXC)
-#   Mosquitto only receives MQTT messages and does not need USB access.
-#
-# Inventory Requirements (in 'homeassistant' group):
-#   - service_id            (unique Proxmox VMID)
-#   - service_name          (canonical name, e.g. "ha")
-#   - ansible_host          (static IP for HA)
-#   - service_backend_port  (HA API port, defined per host)
+# Inventory requirements (group 'homeassistant'):
+#   - service_id, service_name, ansible_host, service_backend_port
 # ==============================================================================
 
 # ============================================================
@@ -53,13 +28,9 @@
   vars_files:
     - "../../inventory/group_vars/all.yml"
   vars:
-    # Convenience aliases – these plays run on localhost so host_vars
-    # for the HA/MQTT hosts are only reachable via hostvars.
     ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
-    mqtt_port: "{{ hostvars[groups['mqtt_brokers'][0]]['service_backend_port'] | default('1883') }}"
 
   tasks:
-    # --- Prerequisites ---
     - name: Ensure required packages are installed
       apt:
         name:
@@ -72,23 +43,20 @@
         state: present
         update_cache: yes
 
-    # --- VM provisioning ---
     - name: Provision HAOS VM
       include_tasks: tasks/provision_vm.yml
 
-    # --- USB passthrough ---
     - name: Configure USB passthrough
       include_tasks: tasks/usb_passthrough.yml
 
-    # --- Detect IP & wait for API ---
     - name: Detect VM IP and wait for HA API
       include_tasks: tasks/detect_and_wait.yml
 
 
 # ============================================================
-# PLAY 2 – Configure Home Assistant via API
+# PLAY 2 – Onboard & assign static IP
 # ============================================================
-- name: Configure Home Assistant
+- name: Configure Home Assistant (Stage 1)
   hosts: localhost
   become: yes
   gather_facts: no
@@ -97,78 +65,41 @@
     - "../../inventory/group_vars/all.yml"
   vars:
     ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
-    mqtt_port: "{{ hostvars[groups['mqtt_brokers'][0]]['service_backend_port'] | default('1883') }}"
 
   tasks:
-    # --- Initialize change tracking ---
-    - name: Initialize reboot tracking flag
-      set_fact:
-        ha_reboot_needed: false
-
-    # --- Onboarding & authentication ---
     - name: Complete onboarding and authenticate
       include_tasks: tasks/onboarding.yml
 
-    # --- Restore from NAS backup (if available) ---
-    # MUST run BEFORE addon installation! If Z2M starts before restore,
-    # it initializes a fresh Zigbee network on the coordinator, losing
-    # all previously paired devices permanently.
-    - name: Attempt restore from NAS backup
-      include_tasks: tasks/restore_from_backup.yml
-
-    # --- Create personal (default) user ---
-    # Skipped after restore: user already exists in restored auth DB.
-    - name: Create default user for day-to-day use
-      include_tasks: tasks/create_default_user.yml
-      when: not (ha_restored_from_backup | default(false) | bool)
-
-    # --- Core config (country, timezone) & OS updates ---
-    # Skipped after restore: core config already set.
-    - name: Configure core settings and apply updates
-      include_tasks: tasks/configure_core_and_updates.yml
-      when: not (ha_restored_from_backup | default(false) | bool)
-
-    # --- Static IP configuration ---
-    # Always runs: HAOS network config is at the OS level and NOT
-    # included in HA backups.
     - name: Configure static IP address
       include_tasks: tasks/configure_network.yml
 
-    # --- Reverse proxy (Traefik) ---
-    # Always runs: has its own idempotent check (skips if already present).
-    - name: Configure reverse proxy trust
-      include_tasks: tasks/configure_reverse_proxy.yml
+    # --- Stage 1 health check: verify HA reachable on static IP ---
+    - name: Verify HA API on static IP
+      uri:
+        url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ ha_tokens[item] }}"
+        status_code: [200]
+        timeout: 30
+      register: stage1_health
+      retries: 30
+      delay: 10
+      until:
+        - stage1_health.status is defined
+        - stage1_health.status == 200
+      loop: "{{ groups['homeassistant'] }}"
+      when: item in ha_tokens
 
-    # --- Add-on installation ---
-    # Skipped after restore: addons and their data are restored from backup.
-    - name: Install and configure add-ons
-      include_tasks: tasks/install_addons.yml
-      when: not (ha_restored_from_backup | default(false) | bool)
-
-    # --- MQTT integration ---
-    # Skipped after restore: MQTT integration config is in .storage/.
-    - name: Configure MQTT integration
-      include_tasks: tasks/configure_mqtt.yml
-      when: not (ha_restored_from_backup | default(false) | bool)
-
-    # --- Reboot & Health Check ---
-    - name: Reboot and verify Home Assistant
-      include_tasks: tasks/reboot_and_healthcheck.yml
-
-
-# ============================================================
-# PLAY 3 – Set up backup to NAS (runs on Proxmox host)
-# ============================================================
-- name: Setup Home Assistant Backup to NAS
-  hosts: localhost
-  become: yes
-  gather_facts: no
-  tags: [backup]
-  vars_files:
-    - "../../inventory/group_vars/all.yml"
-  vars:
-    ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
-
-  tasks:
-    - name: Setup backup to NAS
-      include_tasks: tasks/setup_backup.yml
+    - name: Show Stage 1 result
+      debug:
+        msg: >-
+          Stage 1 complete – HA {{ item.json.version }}
+          running on {{ hostvars[item.item]['ansible_host'] }}
+          (state: {{ item.json.state }})
+      loop: "{{ stage1_health.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - item.skipped is not defined or not item.skipped
+        - item.status is defined and item.status == 200
