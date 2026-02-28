@@ -109,18 +109,38 @@
   loop: "{{ groups['homeassistant'] }}"
 
 # ------------------------------------------------------------------
-# Import HAOS disk image & resize via Proxmox API
+# Import HAOS disk image & attach as scsi0
 # ------------------------------------------------------------------
-- name: Import HAOS disk image into VM
-  community.proxmox.proxmox_disk:
-    vmid: "{{ hostvars[item]['service_id'] }}"
-    disk: scsi0
-    storage: "{{ default_storage }}"
-    import_from: "{{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2"
-    state: present
-    timeout: 300
+# NOTE: community.proxmox.proxmox_disk import_from with absolute paths
+# requires root password auth (not token auth). Since we use API tokens,
+# we fall back to the qm CLI for disk import. This is the only step
+# that cannot use the Proxmox API module.
+# ------------------------------------------------------------------
+- name: Check if scsi0 disk is already attached
+  ansible.builtin.command: "qm config {{ hostvars[item]['service_id'] }}"
+  register: vm_config
+  changed_when: false
   loop: "{{ groups['homeassistant'] }}"
 
+- name: Import HAOS disk image into VM
+  ansible.builtin.command: >-
+    qm importdisk {{ hostvars[item.item]['service_id'] }}
+    {{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2 {{ default_storage }}
+  when: "'scsi0' not in item.stdout"
+  loop: "{{ vm_config.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Attach imported disk as scsi0
+  ansible.builtin.command: >-
+    qm set {{ hostvars[item.item]['service_id'] }}
+    --scsi0 {{ default_storage }}:vm-{{ hostvars[item.item]['service_id'] }}-disk-1
+  when: "'scsi0' not in item.stdout"
+  loop: "{{ vm_config.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# Resize via Proxmox API module (works with token auth on existing disks)
 - name: Resize HAOS disk to desired size
   community.proxmox.proxmox_disk:
     vmid: "{{ hostvars[item]['service_id'] }}"
