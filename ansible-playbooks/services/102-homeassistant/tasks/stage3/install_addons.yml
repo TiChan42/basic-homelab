@@ -119,13 +119,18 @@
         POST /addons/{{ z2m_slug }}/install
         --timeout 180
   register: z2m_install
-  failed_when:
-    - z2m_install.rc != 0
-    - "'already installed' not in (z2m_install.stderr | default(''))"
+  failed_when: false
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
     - not (z2m_installed | bool)
+
+- name: Show Z2M install result
+  ansible.builtin.debug:
+    msg: >-
+      Z2M install – rc={{ z2m_install.results[0].rc | default('skipped') }},
+      stderr={{ z2m_install.results[0].stderr | default('') | truncate(200) }}
+  when: z2m_install.results[0].rc is defined
 
 - name: Wait for Z2M addon installation to complete
   ansible.builtin.command:
@@ -135,7 +140,7 @@
         {{ ha_tokens[item] }}
         GET /addons/{{ z2m_slug }}/info
   register: z2m_install_check
-  retries: 60
+  retries: 30
   delay: 10
   until:
     - z2m_install_check.rc == 0
@@ -255,13 +260,18 @@
         POST /addons/{{ matter_slug }}/install
         --timeout 180
   register: matter_install
-  failed_when:
-    - matter_install.rc != 0
-    - "'already installed' not in (matter_install.stderr | default(''))"
+  failed_when: false
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
     - not (matter_installed | bool)
+
+- name: Show Matter install result
+  ansible.builtin.debug:
+    msg: >-
+      Matter install – rc={{ matter_install.results[0].rc | default('skipped') }},
+      stderr={{ matter_install.results[0].stderr | default('') | truncate(200) }}
+  when: matter_install.results[0].rc is defined
 
 - name: Wait for Matter Server addon installation to complete
   ansible.builtin.command:
@@ -271,7 +281,7 @@
         {{ ha_tokens[item] }}
         GET /addons/{{ matter_slug }}/info
   register: matter_install_check
-  retries: 60
+  retries: 30
   delay: 10
   until:
     - matter_install_check.rc == 0
