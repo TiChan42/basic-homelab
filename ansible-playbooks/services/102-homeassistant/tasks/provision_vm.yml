@@ -145,7 +145,7 @@
   community.proxmox.proxmox_disk:
     vmid: "{{ hostvars[item]['service_id'] }}"
     disk: scsi0
-    size: "{{ ha_vm_disk_size_gib }}"
+    size: "{{ ha_vm_disk_size }}"
     state: resized
   loop: "{{ groups['homeassistant'] }}"
 
