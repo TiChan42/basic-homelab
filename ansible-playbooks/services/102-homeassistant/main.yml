@@ -13,6 +13,10 @@
 #   3. Add-ons (Z2M, Matter) + MQTT integration
 #   4. Backup & Restore
 #
+# Modules used (community.proxmox):
+#   - proxmox_kvm   – VM creation, start/stop, USB passthrough
+#   - proxmox_disk  – disk import (import_from), resize
+#
 # Inventory requirements (group 'homeassistant'):
 #   - service_id, service_name, ansible_host, service_backend_port
 # ==============================================================================
@@ -25,16 +29,28 @@
   become: yes
   gather_facts: yes
   tags: [provision]
+  collections:
+    - community.proxmox
   vars_files:
     - "../../inventory/group_vars/all.yml"
   vars:
     ha_port: "{{ hostvars[groups['homeassistant'][0]]['service_backend_port'] | default('8123') }}"
+    # Numeric GiB value for proxmox_disk resize (strip 'G' suffix from ha_vm_disk_size)
+    ha_vm_disk_size_gib: "{{ ha_vm_disk_size | regex_replace('[^0-9]', '') }}"
+
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ proxmox_api_token_secret }}"
 
   tasks:
     - name: Ensure required packages are installed
-      apt:
+      ansible.builtin.apt:
         name:
           - python3-proxmoxer
+          - python3-requests
           - python3-websocket
           - wget
           - xz-utils
@@ -42,6 +58,12 @@
           - curl
         state: present
         update_cache: yes
+
+    - name: Ensure community.proxmox collection is installed
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection install community.proxmox --upgrade
+      register: collection_install
+      changed_when: "'was installed' in collection_install.stdout or 'was upgraded' in collection_install.stdout"
 
     - name: Provision HAOS VM
       include_tasks: tasks/provision_vm.yml
@@ -75,7 +97,7 @@
 
     # --- Stage 1 health check: verify HA reachable on static IP ---
     - name: Verify HA API on static IP
-      uri:
+      ansible.builtin.uri:
         url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
         method: GET
         headers:
@@ -92,7 +114,7 @@
       when: item in ha_tokens
 
     - name: Show Stage 1 result
-      debug:
+      ansible.builtin.debug:
         msg: >-
           Stage 1 complete – HA {{ item.json.version }}
           running on {{ hostvars[item.item]['ansible_host'] }}

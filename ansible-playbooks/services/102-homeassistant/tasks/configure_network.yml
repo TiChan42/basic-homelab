@@ -8,7 +8,7 @@
 # ==============================================================================
 
 - name: Deploy Supervisor API WebSocket helper script
-  copy:
+  ansible.builtin.copy:
     src: files/ha_supervisor_api.py
     dest: /usr/local/bin/ha_supervisor_api.py
     mode: '0755'
@@ -17,7 +17,7 @@
 # Check if IP change is actually needed
 # ------------------------------------------------------------------
 - name: Determine if static IP configuration is needed
-  set_fact:
+  ansible.builtin.set_fact:
     ha_ip_change_needed: "{{ ha_initial_ips[item] != hostvars[item]['ansible_host'] }}"
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
@@ -26,7 +26,7 @@
 # Apply static IP (only when current IP differs from target)
 # ------------------------------------------------------------------
 - name: Configure static IP address
-  shell: >-
+  ansible.builtin.shell: >-
     echo {{ _ip_body | quote }} |
     python3 /usr/local/bin/ha_supervisor_api.py
     "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}"
@@ -52,7 +52,7 @@
   failed_when: false
 
 - name: Wait for HA to become available on static IP
-  uri:
+  ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/api/"
     method: GET
     status_code: [200, 401]
@@ -68,7 +68,7 @@
 # Re-authenticate on (possibly new) static IP
 # ------------------------------------------------------------------
 - name: Re-authenticate – initiate login flow
-  uri:
+  ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/login_flow"
     method: POST
     headers:
@@ -87,7 +87,7 @@
   when: item in ha_tokens
 
 - name: Re-authenticate – submit credentials
-  uri:
+  ansible.builtin.uri:
     url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.json.flow_id }}"
     method: POST
     headers:
@@ -109,7 +109,7 @@
     label: "{{ item.item }}"
 
 - name: Re-authenticate – exchange auth code for tokens
-  uri:
+  ansible.builtin.uri:
     url: "http://{{ hostvars[_host]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/token"
     method: POST
     body_format: form-urlencoded
@@ -131,7 +131,7 @@
     label: "{{ item.item.item }}"
 
 - name: Update access tokens after re-authentication
-  set_fact:
+  ansible.builtin.set_fact:
     ha_tokens: "{{ ha_tokens | combine({ _host: item.json.access_token }) }}"
   vars:
     _host: "{{ item.item.item.item }}"
@@ -142,11 +142,11 @@
     - item.status is defined and item.status == 200
 
 - name: Update initial IPs to static IP
-  set_fact:
+  ansible.builtin.set_fact:
     ha_initial_ips: "{{ ha_initial_ips | combine({item: hostvars[item]['ansible_host']}) }}"
   loop: "{{ groups['homeassistant'] }}"
 
 - name: Flag reboot needed (IP changed)
-  set_fact:
+  ansible.builtin.set_fact:
     ha_reboot_needed: true
   when: ha_ip_change_needed | default(false) | bool

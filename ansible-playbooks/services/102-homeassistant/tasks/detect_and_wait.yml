@@ -2,9 +2,12 @@
 # ==============================================================================
 # Tasks: Detect VM IP and wait for HA API
 # ==============================================================================
+# Uses the QEMU Guest Agent (via qm guest cmd – no Ansible module for this)
+# to detect the VM's DHCP IP, then waits for the HA API to be ready.
+# ==============================================================================
 
 - name: Wait for QEMU Guest Agent to become ready
-  command: "qm guest cmd {{ hostvars[item]['service_id'] }} ping"
+  ansible.builtin.command: "qm guest cmd {{ hostvars[item]['service_id'] }} ping"
   register: agent_ping
   retries: 30
   delay: 10
@@ -13,7 +16,7 @@
   loop: "{{ groups['homeassistant'] }}"
 
 - name: Detect VM IP address via QEMU Guest Agent
-  shell: >-
+  ansible.builtin.shell: >-
     qm guest cmd {{ hostvars[item]['service_id'] }} network-get-interfaces
     | jq -r '[.[] | select(.name != "lo") | ."ip-addresses"[]?
     | select(."ip-address-type" == "ipv4")] | .[0]."ip-address"'
@@ -22,19 +25,19 @@
   loop: "{{ groups['homeassistant'] }}"
 
 - name: Store detected IP addresses for initial API access
-  set_fact:
+  ansible.builtin.set_fact:
     ha_initial_ips: "{{ ha_initial_ips | default({}) | combine({item.item: item.stdout | trim}) }}"
   loop: "{{ detected_ips.results }}"
   when: item.stdout | trim | length > 0
 
 - name: Show detected HA VM IPs
-  debug:
+  ansible.builtin.debug:
     msg: "{{ item }} – Current IP: {{ ha_initial_ips[item] }} | Target static IP: {{ hostvars[item]['ansible_host'] }}"
   loop: "{{ groups['homeassistant'] }}"
   when: item in (ha_initial_ips | default({}))
 
 - name: Wait for Home Assistant API to become available
-  uri:
+  ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/"
     method: GET
     status_code: [200, 401]
@@ -46,7 +49,7 @@
   loop: "{{ groups['homeassistant'] }}"
 
 - name: Add HA VM DNS entry to /etc/hosts
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: /etc/hosts
     regexp: "\\s+{{ item }}$"
     line: "{{ hostvars[item]['ansible_host'] }} {{ item }}"

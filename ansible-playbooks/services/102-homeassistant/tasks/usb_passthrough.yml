@@ -2,14 +2,23 @@
 # ==============================================================================
 # Tasks: USB Passthrough – Auto-detect and pass through Zigbee dongles
 # ==============================================================================
+# Scans the host USB bus for known Zigbee dongles and configures them
+# as passthrough devices on the HA VM via the Proxmox API.
+#
+# Modules used:
+#   - community.proxmox.proxmox_kvm  (update VM USB config)
+#   - ansible.builtin.command         (lsusb – no module equivalent)
+#
+# Expects module_defaults for group/community.proxmox.proxmox to be set.
+# ==============================================================================
 
 - name: Scan USB bus for connected devices
-  command: lsusb
+  ansible.builtin.command: lsusb
   register: lsusb_output
   changed_when: false
 
 - name: Auto-detect known Zigbee/USB dongles
-  set_fact:
+  ansible.builtin.set_fact:
     ha_detected_usb_devices: >-
       {{ ha_known_zigbee_dongles
          | selectattr('vid_pid', 'in', lsusb_output.stdout)
@@ -17,7 +26,7 @@
          | list }}
 
 - name: Show detected USB dongles
-  debug:
+  ansible.builtin.debug:
     msg: |
       Detected {{ ha_detected_usb_devices | length }} known dongle(s): {{ ha_detected_usb_devices | join(', ') }}
       {% if ha_detected_usb_devices | length == 0 %}
@@ -27,23 +36,33 @@
       {% endif %}
 
 - name: Merge auto-detected with manually specified USB devices
-  set_fact:
+  ansible.builtin.set_fact:
     ha_usb_final_devices: >-
       {{ (ha_detected_usb_devices + ha_usb_extra_devices) | unique | list }}
 
-- name: Configure USB device passthrough for detected dongles
-  command: >-
-    qm set {{ hostvars[usb_passthrough_item.0]['service_id'] }}
-    --usb{{ ansible_loop.index0 }} host={{ usb_passthrough_item.1 }},usb3=1
-  loop: "{{ groups['homeassistant'] | product(ha_usb_final_devices) | list }}"
+# Build a single USB passthrough dictionary: { usb0: "host=VID:PID,usb3=1", usb1: ... }
+- name: Build USB passthrough configuration
+  ansible.builtin.set_fact:
+    _usb_passthrough: "{{ _usb_passthrough | default({}) | combine({'usb' ~ idx: 'host=' ~ item ~ ',usb3=1'}) }}"
+  loop: "{{ ha_usb_final_devices }}"
   loop_control:
-    loop_var: usb_passthrough_item
-    label: "VM {{ hostvars[usb_passthrough_item.0]['service_id'] }} <- USB {{ usb_passthrough_item.1 }}"
-    extended: true
+    index_var: idx
   when: ha_usb_final_devices | length > 0
 
+- name: Apply USB passthrough to HA VM via Proxmox API
+  community.proxmox.proxmox_kvm:
+    vmid: "{{ hostvars[item]['service_id'] }}"
+    node: "{{ proxmox_node }}"
+    usb: "{{ _usb_passthrough }}"
+    update: true
+    update_unsafe: true
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - _usb_passthrough is defined
+    - _usb_passthrough | length > 0
+
 - name: Warn if no USB devices found and none manually specified
-  debug:
+  ansible.builtin.debug:
     msg: >
       WARNING: No USB devices passed through to HA VM!
       Plug in your Zigbee dongle and re-run, or add the device ID
