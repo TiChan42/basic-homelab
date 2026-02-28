@@ -124,6 +124,9 @@
   until: >-
     z2m_install.rc == 0
     or 'already installed' in (z2m_install.stderr | default(''))
+  failed_when:
+    - z2m_install.rc != 0
+    - "'already installed' not in (z2m_install.stderr | default(''))"
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
@@ -269,6 +272,9 @@
   until: >-
     matter_install.rc == 0
     or 'already installed' in (matter_install.stderr | default(''))
+  failed_when:
+    - matter_install.rc != 0
+    - "'already installed' not in (matter_install.stderr | default(''))"
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
