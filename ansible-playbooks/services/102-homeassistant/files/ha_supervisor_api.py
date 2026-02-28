@@ -33,6 +33,7 @@ Exit codes:
 
 import asyncio
 import json
+import os
 import sys
 
 try:
@@ -51,12 +52,13 @@ async def call_supervisor_api_async(
     method: str,
     endpoint: str,
     data: dict | None = None,
+    timeout: int = 120,
 ) -> dict:
     """Call Supervisor API via HA WebSocket (async version using 'websockets')."""
     ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://")
     ws_url = ws_url.rstrip("/") + "/api/websocket"
 
-    async with websockets.connect(ws_url) as ws:
+    async with websockets.connect(ws_url, close_timeout=timeout) as ws:
         # Phase 1: receive auth_required
         msg = json.loads(await ws.recv())
         if msg.get("type") != "auth_required":
@@ -90,12 +92,13 @@ def call_supervisor_api_sync(
     method: str,
     endpoint: str,
     data: dict | None = None,
+    timeout: int = 120,
 ) -> dict:
     """Call Supervisor API via HA WebSocket (sync version using 'websocket-client')."""
     ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://")
     ws_url = ws_url.rstrip("/") + "/api/websocket"
 
-    ws = websocket.create_connection(ws_url)
+    ws = websocket.create_connection(ws_url, timeout=timeout)
     try:
         # Phase 1: receive auth_required
         msg = json.loads(ws.recv())
@@ -333,7 +336,22 @@ def main() -> int:
     method = sys.argv[3]
     endpoint = sys.argv[4]
 
-    raw_data = sys.argv[5] if len(sys.argv) > 5 else None
+    # Parse --timeout from any position in args
+    timeout = int(os.environ.get("HA_WS_TIMEOUT", "120"))
+    remaining_args = sys.argv[5:]
+    filtered_args = []
+    skip_next = False
+    for i, arg in enumerate(remaining_args):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--timeout" and i + 1 < len(remaining_args):
+            timeout = int(remaining_args[i + 1])
+            skip_next = True
+        else:
+            filtered_args.append(arg)
+
+    raw_data = filtered_args[0] if filtered_args else None
     if raw_data == "-":
         raw_data = sys.stdin.read()
     data = json.loads(raw_data) if raw_data else None
@@ -344,11 +362,11 @@ def main() -> int:
             result = _ws_generic(ha_url, token, ws_type=endpoint, data=data)
         elif HAS_WEBSOCKETS:
             result = asyncio.run(
-                call_supervisor_api_async(ha_url, token, method, endpoint, data)
+                call_supervisor_api_async(ha_url, token, method, endpoint, data, timeout=timeout)
             )
         else:
             result = call_supervisor_api_sync(
-                ha_url, token, method, endpoint, data
+                ha_url, token, method, endpoint, data, timeout=timeout
             )
     except Exception as exc:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
