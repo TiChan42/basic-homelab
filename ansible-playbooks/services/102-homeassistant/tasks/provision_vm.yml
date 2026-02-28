@@ -126,7 +126,7 @@
   ansible.builtin.command: >-
     qm importdisk {{ hostvars[item.item]['service_id'] }}
     {{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2 {{ default_storage }}
-  when: "'scsi0' not in item.stdout"
+  when: "'scsi0:' not in item.stdout"
   loop: "{{ vm_config.results }}"
   loop_control:
     label: "{{ item.item }}"
@@ -135,7 +135,7 @@
   ansible.builtin.command: >-
     qm set {{ hostvars[item.item]['service_id'] }}
     --scsi0 {{ default_storage }}:vm-{{ hostvars[item.item]['service_id'] }}-disk-1
-  when: "'scsi0' not in item.stdout"
+  when: "'scsi0:' not in item.stdout"
   loop: "{{ vm_config.results }}"
   loop_control:
     label: "{{ item.item }}"
