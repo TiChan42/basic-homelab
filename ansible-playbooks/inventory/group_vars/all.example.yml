@@ -141,7 +141,7 @@ ha_vm_cores: 4
 ha_vm_cpu_type: "host"
 ha_vm_disk_size: "64G"
 ha_vm_bridge: "vmbr0"
-ha_vm_mac: ""                                    # Leave empty for auto-generated
+ha_vm_mac: "BC:24:11:DE:5D:86"                # CHANGE THIS or leave empty for auto-generated
 
 # HA Admin User
 ha_admin_name: "Admin"                           # CHANGE THIS
