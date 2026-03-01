@@ -1,18 +1,20 @@
 ---
 # ==============================================================================
-# Tasks: Setup HA Native Backup with NAS Storage
+# Tasks: Setup HA Native Backup with NAS Storage (via Proxmox host)
 # ==============================================================================
-# Creates an NFS network mount inside HAOS for off-site backup storage
-# and configures HA's native backup system (introduced in 2025.1) with
-# automatic scheduling and retention policies.
+# Configures HA's native backup system (introduced in 2025.1) with
+# automatic scheduling and retention policies.  Backups are created
+# locally inside HAOS and then copied to the NAS via the Proxmox host's
+# already-mounted NFS share ({{ nas_backup_mount }}).
 #
-# No custom scripts or cron jobs – uses HA's built-in backup manager.
+# The NAS NFS export only allows the Proxmox host IP, so HAOS cannot
+# mount it directly.  Stage 5 (create_backup) handles the NAS copy.
 #
 # Components configured:
-#   1. NFS mount inside HAOS (Supervisor /mounts API)
-#   2. Backup agents (local + NAS)
+#   1. Backup directory on NAS (via Proxmox host mount)
+#   2. Local backup agent (hassio.local)
 #   3. Schedule (daily, HA default time ~04:45)
-#   4. Retention (configurable number of copies)
+#   4. Retention (configurable number of local copies)
 #
 # Cleanup: Removes legacy custom backup scripts and cron if present.
 #
@@ -53,74 +55,9 @@
     group: root
 
 # ------------------------------------------------------------------
-# Create NFS mount inside HAOS for backup storage
+# Configure HA's native backup schedule and retention (local only)
 # ------------------------------------------------------------------
-- name: Check existing HAOS network mounts
-  ansible.builtin.shell: >-
-    python3 /usr/local/bin/ha_supervisor_api.py
-    "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
-    "{{ ha_tokens[groups['homeassistant'][0]] }}"
-    GET /mounts
-  register: haos_mounts_raw
-  changed_when: false
-
-- name: Determine if NAS backup mount already exists
-  ansible.builtin.set_fact:
-    haos_backup_mount_exists: >-
-      {{ (haos_mounts_raw.stdout | from_json).mounts | default([])
-         | selectattr('name', 'equalto', ha_backup_mount_name)
-         | list | length > 0 }}
-
-- name: Create NFS backup mount in HAOS
-  ansible.builtin.shell: >-
-    python3 /usr/local/bin/ha_supervisor_api.py
-    "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
-    "{{ ha_tokens[groups['homeassistant'][0]] }}"
-    POST /mounts
-    '{{ _mount_payload | to_json }}'
-  vars:
-    _mount_payload:
-      name: "{{ ha_backup_mount_name }}"
-      type: "nfs"
-      usage: "backup"
-      server: "{{ nas_ip }}"
-      path: "{{ nas_nfs_export }}/backups/homeassistant/homeassistant"
-  register: mount_create_result
-  when: not (haos_backup_mount_exists | bool)
-
-- name: Wait for NFS mount to become available
-  ansible.builtin.pause:
-    seconds: 5
-  when: not (haos_backup_mount_exists | bool)
-
-# ------------------------------------------------------------------
-# Verify the mount is active and backup agent is registered
-# ------------------------------------------------------------------
-- name: Verify backup agent for NAS mount is registered
-  ansible.builtin.shell: >-
-    python3 /usr/local/bin/ha_supervisor_api.py
-    "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
-    "{{ ha_tokens[groups['homeassistant'][0]] }}"
-    ws backup/agents/info
-  register: backup_agents_raw
-  changed_when: false
-  retries: 12
-  delay: 5
-  until: >-
-    (backup_agents_raw.stdout | from_json).agents | default([])
-    | selectattr('agent_id', 'equalto', 'hassio.' + ha_backup_mount_name)
-    | list | length > 0
-
-- name: Show available backup agents
-  ansible.builtin.debug:
-    msg: >-
-      Backup agents: {{ (backup_agents_raw.stdout | from_json).agents
-                        | map(attribute='agent_id') | list }}
-
-# ------------------------------------------------------------------
-# Configure HA's native backup schedule and retention
-# ------------------------------------------------------------------
-- name: Configure native backup (schedule, retention, locations)
+- name: Configure native backup (schedule, retention, local agent)
   ansible.builtin.shell: >-
     python3 /usr/local/bin/ha_supervisor_api.py
     "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
@@ -132,7 +69,6 @@
       create_backup:
         agent_ids:
           - "hassio.local"
-          - "hassio.{{ ha_backup_mount_name }}"
         include_addons: null
         include_all_addons: true
         include_database: true
@@ -160,7 +96,7 @@
   ansible.builtin.assert:
     that:
       - (backup_config_verify.stdout | from_json).config.schedule.recurrence == 'daily'
-      - (backup_config_verify.stdout | from_json).config.create_backup.agent_ids | length >= 2
+      - (backup_config_verify.stdout | from_json).config.create_backup.agent_ids | length >= 1
     fail_msg: "Native backup configuration was not applied correctly."
     success_msg: >-
       Native backup configured: schedule=daily,
@@ -171,7 +107,7 @@
   ansible.builtin.debug:
     msg: >-
       Native backup infrastructure deployed:
-      NAS mount={{ ha_backup_mount_name }} ({{ nas_ip }}:{{ nas_nfs_export }}/backups/homeassistant/homeassistant),
-      agents=hassio.local + hassio.{{ ha_backup_mount_name }},
+      local agent=hassio.local,
+      NAS copy via Proxmox host mount={{ nas_backup_mount }}/homeassistant/homeassistant,
       retention={{ ha_backup_keep_count }} copies,
       schedule=daily (HA default ~04:45)

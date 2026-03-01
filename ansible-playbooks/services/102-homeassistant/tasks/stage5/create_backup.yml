@@ -2,13 +2,15 @@
 # ==============================================================================
 # Tasks: Create Initial HA Backup via Native Backup System
 # ==============================================================================
-# Triggers HA's built-in backup manager to create a full backup.
-# The backup is stored on all agents configured in Stage 2
-# (local + NAS mount) using the native backup settings.
+# Triggers HA's built-in backup manager to create a full backup locally,
+# then downloads it from HA and copies it to the NAS via the Proxmox
+# host's already-mounted NFS share.
 #
-# Uses the Supervisor API POST /backups/new/full for a reliable,
-# blocking backup creation.  The native backup schedule (daily)
-# handles all future backups automatically.
+# The NAS NFS export only allows connections from the Proxmox host IP,
+# so HAOS cannot write to the NAS directly.  The copy goes:
+#   HAOS (local backup) → curl download → NAS mount on Proxmox host
+#
+# Old backups on NAS are rotated based on ha_backup_keep_count.
 # ==============================================================================
 
 - name: Check if NAS mount is available
@@ -23,32 +25,9 @@
   when: nas_mount_check.rc != 0
 
 # ------------------------------------------------------------------
-# Verify HAOS NFS backup mount is active
+# Create full backup via Supervisor API (local storage)
 # ------------------------------------------------------------------
-- name: Verify HAOS backup mount is active
-  ansible.builtin.shell: >-
-    python3 /usr/local/bin/ha_supervisor_api.py
-    "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
-    "{{ ha_tokens[groups['homeassistant'][0]] }}"
-    GET /mounts
-  register: mounts_check
-  changed_when: false
-
-- name: Assert NAS backup mount is present in HAOS
-  ansible.builtin.assert:
-    that:
-      - (mounts_check.stdout | from_json).mounts | default([])
-        | selectattr('name', 'equalto', ha_backup_mount_name)
-        | list | length > 0
-    fail_msg: >-
-      HAOS NFS backup mount '{{ ha_backup_mount_name }}' not found.
-      Run Stage 2 (setup_backup) first.
-    success_msg: "HAOS NFS backup mount '{{ ha_backup_mount_name }}' is active."
-
-# ------------------------------------------------------------------
-# Create full backup via Supervisor API
-# ------------------------------------------------------------------
-- name: Create initial full HA backup (local + NAS)
+- name: Create initial full HA backup (local)
   ansible.builtin.shell: >-
     python3 /usr/local/bin/ha_supervisor_api.py
     "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
@@ -73,51 +52,17 @@
     msg: "Backup created with slug: {{ ha_new_backup_slug }}"
 
 # ------------------------------------------------------------------
-# Copy backup to NAS via Supervisor backup agent
-# (The local backup is created by default; now ensure NAS has a copy)
+# Download backup from HA and copy to NAS (via Proxmox host)
 # ------------------------------------------------------------------
-- name: List backup details to verify
-  ansible.builtin.shell: >-
-    python3 /usr/local/bin/ha_supervisor_api.py
-    "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
-    "{{ ha_tokens[groups['homeassistant'][0]] }}"
-    GET /backups/{{ ha_new_backup_slug }}/info
-  register: backup_info_raw
-  changed_when: false
-
-- name: Parse backup locations
+- name: Set NAS backup directory path
   ansible.builtin.set_fact:
-    ha_backup_locations: "{{ (backup_info_raw.stdout | from_json).locations | default([]) }}"
+    ha_nas_backup_dir: "{{ nas_backup_mount }}/homeassistant/homeassistant"
 
-- name: Show backup details
-  ansible.builtin.debug:
-    msg: >-
-      Backup {{ ha_new_backup_slug }}:
-      type={{ (backup_info_raw.stdout | from_json).type | default('?') }},
-      size={{ (backup_info_raw.stdout | from_json).size_bytes | default(0) | int // 1024 }} KB,
-      locations={{ ha_backup_locations }},
-      addons={{ (backup_info_raw.stdout | from_json).addons | default([]) | map(attribute='slug') | list }}
-
-# ------------------------------------------------------------------
-# Ensure the backup also exists on NAS via download + manual copy
-# (Supervisor POST /backups/new/full stores locally by default;
-#  the NAS agent might not receive it automatically)
-# ------------------------------------------------------------------
-- name: Check if backup already exists on NAS mount
-  ansible.builtin.set_fact:
-    ha_backup_on_nas: >-
-      {{ ha_backup_mount_name in (ha_backup_locations | map('string') | list)
-         or ha_backup_locations | select('match', '.*' + ha_backup_mount_name + '.*') | list | length > 0 }}
-
-- name: Download backup and copy to NAS (if not already there)
+- name: Download backup from HA to NAS
   ansible.builtin.shell: |
-    BACKUP_FILE="{{ nas_backup_mount }}/homeassistant/homeassistant/{{ ha_new_backup_slug }}.tar"
-    if [ -f "$BACKUP_FILE" ]; then
-      echo "Backup already on NAS"
-      exit 0
-    fi
+    BACKUP_FILE="{{ ha_nas_backup_dir }}/{{ ha_new_backup_slug }}.tar"
 
-    # Download backup from HA
+    # Download backup from HA Supervisor API
     HTTP_CODE=$(curl -s -o "$BACKUP_FILE" -w "%{http_code}" \
       -H "Authorization: Bearer {{ ha_tokens[groups['homeassistant'][0]] }}" \
       "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}/api/hassio/backups/{{ ha_new_backup_slug }}/download")
@@ -139,13 +84,52 @@
     echo "Backup copied to NAS ($SIZE bytes)"
   register: nas_copy_result
   changed_when: "'copied to NAS' in nas_copy_result.stdout"
-  when: not (ha_backup_on_nas | bool)
   no_log: true
 
+- name: Show NAS copy result
+  ansible.builtin.debug:
+    msg: "{{ nas_copy_result.stdout | default('NAS copy completed') }}"
+
+# ------------------------------------------------------------------
+# Rotate old backups on NAS (keep ha_backup_keep_count newest)
+# ------------------------------------------------------------------
+- name: Rotate old backups on NAS
+  ansible.builtin.shell: |
+    BACKUP_DIR="{{ ha_nas_backup_dir }}"
+    KEEP={{ ha_backup_keep_count | int }}
+    
+    # List all .tar files sorted by modification time (newest first)
+    FILES=$(ls -t "$BACKUP_DIR"/*.tar 2>/dev/null)
+    COUNT=$(echo "$FILES" | grep -c . 2>/dev/null || echo "0")
+    
+    if [ "$COUNT" -le "$KEEP" ]; then
+      echo "OK: $COUNT backup(s), keeping all (limit=$KEEP)"
+      exit 0
+    fi
+    
+    # Delete oldest files beyond the keep count
+    DELETED=0
+    echo "$FILES" | tail -n +$(( KEEP + 1 )) | while read -r OLD_FILE; do
+      rm -f "$OLD_FILE"
+      DELETED=$(( DELETED + 1 ))
+      echo "Deleted: $(basename "$OLD_FILE")"
+    done
+    
+    REMAINING=$(ls "$BACKUP_DIR"/*.tar 2>/dev/null | wc -l)
+    echo "OK: Rotated down to $REMAINING backup(s) (limit=$KEEP)"
+  register: rotate_result
+  changed_when: "'Deleted:' in rotate_result.stdout"
+
+- name: Show rotation result
+  ansible.builtin.debug:
+    msg: "{{ rotate_result.stdout }}"
+
+# ------------------------------------------------------------------
+# Final validation
+# ------------------------------------------------------------------
 - name: Validate backup on NAS
   ansible.builtin.shell: |
-    # Find the newest backup file on NAS
-    BACKUP_DIR="{{ nas_backup_mount }}/homeassistant/homeassistant"
+    BACKUP_DIR="{{ ha_nas_backup_dir }}"
     FILE_COUNT=$(find "$BACKUP_DIR" -name "*.tar" -type f 2>/dev/null | wc -l)
     if [ "$FILE_COUNT" -eq 0 ]; then
       echo "FAIL: No backup tar files found on NAS"

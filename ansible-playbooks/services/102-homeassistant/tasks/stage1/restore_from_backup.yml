@@ -1,23 +1,23 @@
 ---
 # ==============================================================================
-# Tasks: Restore Home Assistant from NAS backup (native backup system)
+# Tasks: Restore Home Assistant from NAS backup (via Proxmox host)
 # ==============================================================================
 # Runs AFTER onboarding + static IP and BEFORE any addon/configuration.
-# Uses HA's native backup system:
+# Uses HA's native backup system with NAS storage on the Proxmox host.
+#
+# The NAS NFS export only allows the Proxmox host IP, so backups are
+# uploaded from the Proxmox host's NAS mount to HAOS via the API.
 #
 # Flow:
 # 1. Check entity count (overwrite protection: skip if >50 entities)
 # 2. Check NAS for backup files (from Proxmox host filesystem)
-# 3. Create NFS mount inside HAOS pointing to NAS backup directory
-# 4. Wait for HAOS to discover backups via the mount
-# 5. Find the newest full backup in the Supervisor backup list
-# 6. Trigger restore via Supervisor API
-# 7. Wait for HA to come back
-# 8. Re-authenticate (restore replaces the auth database)
-# 9. Set ha_restored_from_backup=true so subsequent tasks can skip
+# 3. Upload newest backup to HAOS via Supervisor API
+# 4. Trigger restore via Supervisor API
+# 5. Wait for HA to come back
+# 6. Re-authenticate (restore replaces the auth database)
+# 7. Set ha_restored_from_backup=true so subsequent tasks can skip
 #
-# If HAOS cannot discover backups via the mount (e.g. NFS issue from
-# inside the VM), falls back to uploading from the Proxmox host.
+# Idempotent: Skips restore when HA already has >50 entities.
 # ==============================================================================
 
 - name: Initialize restore tracking
@@ -96,113 +96,40 @@
   when: ha_restore_needed | bool
 
 # ------------------------------------------------------------------
-# Create HAOS NFS mount for backup discovery
+# Upload backup from Proxmox host NAS mount to HAOS
 # ------------------------------------------------------------------
-- name: Check existing HAOS mounts
-  ansible.builtin.shell: >-
-    python3 /usr/local/bin/ha_supervisor_api.py
-    "http://{{ ha_initial_ips[groups['homeassistant'][0]] }}:{{ ha_port | default('8123') }}"
-    "{{ ha_tokens[groups['homeassistant'][0]] }}"
-    GET /mounts
-  register: restore_mounts_raw
-  changed_when: false
-  when:
-    - ha_restore_needed | bool
-    - ha_nas_has_backups | default(false) | bool
-
-- name: Determine if NAS backup mount exists
-  set_fact:
-    restore_mount_exists: >-
-      {{ (restore_mounts_raw.stdout | from_json).mounts | default([])
-         | selectattr('name', 'equalto', ha_backup_mount_name)
-         | list | length > 0 }}
-  when:
-    - ha_restore_needed | bool
-    - ha_nas_has_backups | default(false) | bool
-
-- name: Create NFS backup mount in HAOS for restore
-  ansible.builtin.shell: >-
-    python3 /usr/local/bin/ha_supervisor_api.py
-    "http://{{ ha_initial_ips[groups['homeassistant'][0]] }}:{{ ha_port | default('8123') }}"
-    "{{ ha_tokens[groups['homeassistant'][0]] }}"
-    POST /mounts
-    '{{ _mount_payload | to_json }}'
-  vars:
-    _mount_payload:
-      name: "{{ ha_backup_mount_name }}"
-      type: "nfs"
-      usage: "backup"
-      server: "{{ nas_ip }}"
-      path: "{{ nas_nfs_export }}/backups/homeassistant/homeassistant"
-  when:
-    - ha_restore_needed | bool
-    - ha_nas_has_backups | default(false) | bool
-    - not (restore_mount_exists | default(false) | bool)
-
-# ------------------------------------------------------------------
-# Wait for HAOS to discover backups on the mount
-# ------------------------------------------------------------------
-- name: Wait for HAOS to discover NAS backups
-  ansible.builtin.shell: >-
-    python3 /usr/local/bin/ha_supervisor_api.py
-    "http://{{ ha_initial_ips[groups['homeassistant'][0]] }}:{{ ha_port | default('8123') }}"
-    "{{ ha_tokens[groups['homeassistant'][0]] }}"
-    GET /backups
-  register: restore_backups_raw
-  changed_when: false
-  retries: 12
-  delay: 5
-  until: >-
-    (restore_backups_raw.stdout | from_json).backups | default([]) | length > 0
-  when:
-    - ha_restore_needed | bool
-    - ha_nas_has_backups | default(false) | bool
-
-# ------------------------------------------------------------------
-# Find newest full backup and trigger restore
-# ------------------------------------------------------------------
-- name: Find newest full backup
-  set_fact:
-    ha_restore_slug: >-
-      {{ (restore_backups_raw.stdout | from_json).backups | default([])
-         | sort(attribute='date', reverse=true)
-         | map(attribute='slug') | first | default('') }}
-    ha_restore_backup_info: >-
-      {{ (restore_backups_raw.stdout | from_json).backups | default([])
-         | sort(attribute='date', reverse=true)
-         | first | default({}) }}
-  when:
-    - ha_restore_needed | bool
-    - ha_nas_has_backups | default(false) | bool
-    - restore_backups_raw.stdout is defined
-
-# ------------------------------------------------------------------
-# Fallback: Upload from Proxmox host if discovery failed
-# ------------------------------------------------------------------
-- name: Upload backup from NAS (fallback if HAOS discovery failed)
-  shell: |
-    curl -s -w "\n%{http_code}" -X POST \
+- name: Upload backup to HAOS from NAS
+  ansible.builtin.shell: |
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
       "http://{{ ha_initial_ips[groups['homeassistant'][0]] }}:{{ ha_port | default('8123') }}/api/hassio/backups/new/upload" \
       -H "Authorization: Bearer {{ ha_tokens[groups['homeassistant'][0]] }}" \
-      -F "file=@{{ ha_nas_newest_backup }}"
+      -F "file=@{{ ha_nas_newest_backup }}")
+
+    HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+    BODY=$(echo "$RESPONSE" | head -n -1)
+
+    if [ "$HTTP_CODE" != "200" ]; then
+      echo "Upload failed (HTTP $HTTP_CODE): $BODY"
+      exit 1
+    fi
+
+    echo "$BODY"
   register: ha_backup_upload
   no_log: true
   when:
     - ha_restore_needed | bool
     - ha_nas_has_backups | default(false) | bool
-    - ha_restore_slug | default('') | length == 0
 
-- name: Parse upload response (fallback)
+- name: Parse upload response
   set_fact:
-    ha_restore_slug: >-
-      {{ (ha_backup_upload.stdout_lines[0:-1] | join('') | from_json).data.slug | default('') }}
+    ha_restore_slug: "{{ (ha_backup_upload.stdout | from_json).data.slug | default('') }}"
   when:
     - ha_backup_upload is defined
     - ha_backup_upload.skipped is not defined or not ha_backup_upload.skipped
 
-- name: Fail if no backup could be found or uploaded
+- name: Fail if backup upload failed
   fail:
-    msg: "No backup available for restore (discovery and upload both failed)."
+    msg: "Failed to upload backup to HAOS. Output: {{ ha_backup_upload.stdout | default('') }}"
   when:
     - ha_restore_needed | bool
     - ha_nas_has_backups | default(false) | bool
@@ -211,8 +138,8 @@
 - name: Show restore plan
   debug:
     msg: >-
-      Restoring backup (slug: {{ ha_restore_slug }})
-      {{ ha_restore_backup_info | default({}) }}
+      Restoring backup (slug: {{ ha_restore_slug }},
+      source: {{ ha_nas_newest_backup | default('unknown') }})
   when:
     - ha_restore_needed | bool
     - ha_restore_slug | default('') | length > 0
@@ -357,6 +284,6 @@
 - name: Show final restore status
   debug:
     msg: >-
-      {{ 'HA successfully restored from NAS backup (native system). Subsequent fresh-install tasks will be skipped.'
+      {{ 'HA successfully restored from NAS backup (uploaded via Proxmox host). Subsequent fresh-install tasks will be skipped.'
          if ha_restored_from_backup | bool
          else 'No restore performed – continuing with fresh installation.' }}

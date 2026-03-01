@@ -11,7 +11,7 @@
 #      Skipped when VM is healthy + correct HAOS version.
 #
 #   2. Backup Strategy                 (tasks/stage2/)
-#      NFS mount in HAOS + native backup config.  Idempotent, always runs.
+#      Native backup config + NAS copy via Proxmox host.  Idempotent, always runs.
 #
 #   3. HA Configuration                (tasks/stage3/)
 #      Core config, users, addons, MQTT, reverse proxy.

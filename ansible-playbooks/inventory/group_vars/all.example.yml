@@ -172,7 +172,7 @@ ha_z2m_serial_port: "/dev/ttyUSB0"
 ha_z2m_serial_adapter: "ezsp"                    # ezsp, zstack, deconz, zigate
 
 # HA Native Backup settings (uses HA's built-in backup manager since 2025.1)
-ha_backup_mount_name: "nas_backup"            # Name of the HAOS NFS mount for backup storage
+
 ha_backup_keep_count: 3                       # Retention: number of backup copies to keep
 
 # ==============================================================================
