@@ -156,12 +156,14 @@
 # --- Configure Zigbee2MQTT addon ---
 - name: Configure Zigbee2MQTT addon options
   ansible.builtin.command:
-    cmd: >-
-      python3 /usr/local/bin/ha_supervisor_api.py
-        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
-        {{ ha_tokens[item] }}
-        POST /addons/{{ z2m_slug }}/options
-        '{{ z2m_options | to_json }}'
+    argv:
+      - python3
+      - /usr/local/bin/ha_supervisor_api.py
+      - "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}"
+      - "{{ ha_tokens[item] }}"
+      - POST
+      - "/addons/{{ z2m_slug }}/options"
+      - "{{ z2m_options | to_json }}"
   vars:
     z2m_options:
       options:
