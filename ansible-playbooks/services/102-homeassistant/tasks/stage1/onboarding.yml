@@ -40,8 +40,6 @@
   register: onboarding_result
   when:
     - item.status == 200
-    - item.json is defined
-    - item.json | selectattr('step', 'equalto', 'user') | selectattr('done', 'equalto', false) | list | length > 0
   no_log: true
   loop: "{{ onboarding_status.results }}"
   loop_control:
@@ -57,6 +55,10 @@
   when:
     - item.skipped is not defined or not item.skipped
     - item.status is defined and item.status == 200
+
+- name: Record hosts that were freshly onboarded
+  ansible.builtin.set_fact:
+    ha_fresh_hosts: "{{ onboarding_status.results | selectattr('status', 'equalto', 200) | map(attribute='item') | list }}"
 
 # ------------------------------------------------------------------
 # Path B: Re-run – obtain auth_code via login flow
@@ -80,6 +82,7 @@
   register: login_flow
   when:
     - item not in (ha_auth_codes | default({}))
+    - item not in (ha_fresh_hosts | default([]))
   loop: "{{ groups['homeassistant'] }}"
 
 - name: Submit credentials to login flow
