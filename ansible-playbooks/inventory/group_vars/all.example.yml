@@ -171,16 +171,9 @@ ha_z2m_mqtt_broker_ip: "{{ hostvars['mqtt-broker']['ansible_host'] | default('19
 ha_z2m_serial_port: "/dev/ttyUSB0"
 ha_z2m_serial_adapter: "ezsp"                    # ezsp, zstack, deconz, zigate
 
-# HA Backup settings
-ha_refresh_token_file: "/etc/ha_backup_refresh_token"  # Auto-generated during setup
-ha_backup_script_path: "/usr/local/bin/ha_backup.sh"
-ha_restore_script_path: "/usr/local/bin/ha_restore.sh"
-ha_healthcheck_script_path: "/usr/local/bin/ha_healthcheck.sh"
-ha_backup_cron_minute: "30"
-ha_backup_cron_hour: "2"                         # Daily at 02:30
-ha_backup_keep_count: 3                           # Number of rotated backups to keep (NAS + HA internal)
-ha_backup_min_size: 10240                         # Minimum backup size in bytes (10 KB)
-ha_healthcheck_cron_minute: "*/10"               # Every 10 minutes
+# HA Native Backup settings (uses HA's built-in backup manager since 2025.1)
+ha_backup_mount_name: "nas_backup"            # Name of the HAOS NFS mount for backup storage
+ha_backup_keep_count: 3                       # Retention: number of backup copies to keep
 
 # ==============================================================================
 # Node-RED – Service-specific settings

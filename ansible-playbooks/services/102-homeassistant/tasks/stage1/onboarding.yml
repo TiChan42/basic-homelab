@@ -143,19 +143,6 @@
     - item.skipped is not defined or not item.skipped
     - item.status is defined and item.status == 200
 
-- name: Save refresh token to file for backup scripts
-  ansible.builtin.copy:
-    dest: "{{ ha_refresh_token_file }}"
-    content: "{{ item.json.refresh_token }}"
-    mode: '0600'
-    owner: root
-    group: root
-  loop: "{{ auth_response.results }}"
-  no_log: true
-  when:
-    - item.skipped is not defined or not item.skipped
-    - item.status is defined and item.status == 200
-
 # ------------------------------------------------------------------
 # Complete remaining onboarding steps (idempotent – skips if done)
 # ------------------------------------------------------------------
