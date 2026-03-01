@@ -533,7 +533,7 @@
     token = "{{ ha_tokens[item] }}"
 
     # Find ZHA flow from discovery state
-    flows = {{ _disc.flows | to_json }}
+    flows = json.loads('{{ _disc.flows | to_json }}')
     zha_flows = [f for f in flows if f.get("handler") == "zha"]
 
     if not zha_flows:
