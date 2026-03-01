@@ -411,14 +411,14 @@
     - item in ha_tokens
     - not (matter_running | bool)
 
-- name: Enable Matter Server auto-start and watchdog
+- name: Enable Matter Server auto-start, watchdog and sidebar panel
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
         http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
         {{ ha_tokens[item] }}
         POST /addons/{{ matter_slug }}/options
-        '{"boot": "auto", "watchdog": true}'
+        '{"boot": "auto", "watchdog": true, "ingress_panel": true}'
   changed_when: true
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
@@ -460,3 +460,140 @@
     msg: >-
       Addons – Z2M: {{ (z2m_verify.results[0].stdout | from_json).state | default('unknown') }},
       Matter: {{ (matter_verify.results[0].stdout | from_json).state | default('unknown') }}
+
+# ╔════════════════════════════════════════════════════════════╗
+# ║  Handle Discovered Integrations (ZHA + Matter)            ║
+# ╚════════════════════════════════════════════════════════════╝
+# After addons start, HA auto-discovers:
+#   1. ZHA – detects SONOFF USB dongle, offers ZHA setup.
+#      Since Z2M handles the dongle, we IGNORE this discovery.
+#   2. Matter – detects Matter Server addon via mDNS/zeroconf.
+#      We ACCEPT this flow to create the Matter integration.
+# These run idempotently – skip if already handled.
+
+- name: Get current discovery flows and config entries
+  ansible.builtin.shell: |
+    python3 << 'PYEOF'
+    import json, sys
+    sys.path.insert(0, '/usr/local/bin')
+    import websocket
+
+    ha_url = "ws://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/websocket"
+    token = "{{ ha_tokens[item] }}"
+
+    ws = websocket.create_connection(ha_url)
+    ws.recv()  # auth_required
+    ws.send(json.dumps({"type": "auth", "access_token": token}))
+    ws.recv()  # auth_ok
+
+    # Get discovery flow progress
+    ws.send(json.dumps({"id": 1, "type": "config_entries/flow/progress"}))
+    flows_result = json.loads(ws.recv())
+    flows = flows_result.get("result", [])
+
+    # Get existing config entries
+    ws.send(json.dumps({"id": 2, "type": "config_entries/get"}))
+    entries_result = json.loads(ws.recv())
+    entries = entries_result.get("result", [])
+
+    ws.close()
+
+    output = {
+        "flows": flows,
+        "zha_ignored": any(e["domain"] == "zha" and e.get("source") == "ignore" for e in entries),
+        "matter_configured": any(e["domain"] == "matter" and e.get("state") == "loaded" for e in entries),
+    }
+    print(json.dumps(output))
+    PYEOF
+  register: discovery_state
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Parse discovery state
+  ansible.builtin.set_fact:
+    _disc: "{{ (discovery_state.results | first).stdout | from_json }}"
+
+- name: Show discovery state
+  ansible.builtin.debug:
+    msg: >-
+      Discovery – ZHA ignored: {{ _disc.zha_ignored }},
+      Matter configured: {{ _disc.matter_configured }},
+      Pending flows: {{ _disc.flows | length }}
+
+# --- Ignore ZHA USB discovery (SONOFF dongle is managed by Z2M) ---
+- name: Ignore ZHA discovery for USB dongle
+  ansible.builtin.shell: |
+    python3 << 'PYEOF'
+    import json, sys
+    sys.path.insert(0, '/usr/local/bin')
+    import websocket
+
+    ha_url = "ws://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/websocket"
+    token = "{{ ha_tokens[item] }}"
+
+    # Find ZHA flow from discovery state
+    flows = {{ _disc.flows | to_json }}
+    zha_flows = [f for f in flows if f.get("handler") == "zha"]
+
+    if not zha_flows:
+        print("SKIP – no ZHA discovery flow")
+        sys.exit(0)
+
+    ws = websocket.create_connection(ha_url)
+    ws.recv()
+    ws.send(json.dumps({"type": "auth", "access_token": token}))
+    ws.recv()
+
+    for i, flow in enumerate(zha_flows):
+        ws.send(json.dumps({
+            "id": i + 1,
+            "type": "config_entries/ignore_flow",
+            "flow_id": flow["flow_id"],
+            "title": "SONOFF Dongle Plus MG24 (used by Zigbee2MQTT)"
+        }))
+        result = json.loads(ws.recv())
+        if result.get("success"):
+            print("CHANGED – ignored ZHA flow " + flow["flow_id"])
+        else:
+            print("FAILED – " + json.dumps(result))
+
+    ws.close()
+    PYEOF
+  register: zha_ignore
+  changed_when: "'CHANGED' in zha_ignore.stdout"
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (_disc.zha_ignored | bool)
+
+# --- Accept Matter Server discovery (create integration entry) ---
+- name: Accept Matter Server discovery
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/flow/{{ _matter_flow_id }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ ha_tokens[item] }}"
+    body_format: json
+    body: {}
+    status_code: [200]
+    timeout: 30
+  vars:
+    _matter_flows: >-
+      {{ _disc.flows | selectattr('handler', 'equalto', 'matter') | list }}
+    _matter_flow_id: "{{ (_matter_flows | first).flow_id }}"
+  register: matter_accept
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (_disc.matter_configured | bool)
+    - _disc.flows | selectattr('handler', 'equalto', 'matter') | list | length > 0
+
+- name: Show Matter integration result
+  ansible.builtin.debug:
+    msg: >-
+      Matter integration: {{ 'already configured' if (_disc.matter_configured | bool)
+      else ('created – ' + (matter_accept.results | first).json.title | default('accepted'))
+      if matter_accept is defined and matter_accept.results is defined
+      and (matter_accept.results | first).status | default(0) == 200
+      else 'no discovery flow found' }}
