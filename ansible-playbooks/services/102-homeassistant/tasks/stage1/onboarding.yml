@@ -24,6 +24,18 @@
 # ------------------------------------------------------------------
 # Path A: First run – onboarding creates admin user & returns auth_code
 # ------------------------------------------------------------------
+- name: "DEBUG: Onboarding status structure"
+  ansible.builtin.debug:
+    msg: >-
+      host={{ item.item }}
+      status={{ item.status | default('UNDEFINED') }}
+      status_type={{ item.status | type_debug }}
+      has_json={{ item.json is defined }}
+      cond_status_eq_200={{ item.status == 200 }}
+  loop: "{{ onboarding_status.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Complete HA onboarding – create admin user
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/api/onboarding/users"
