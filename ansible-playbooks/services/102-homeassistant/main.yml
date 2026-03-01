@@ -24,11 +24,6 @@
 #   5. Backup Creation                 (tasks/stage5/)
 #      Triggers native HA backup to local + NAS.
 #
-# Implementation milestones (Stufen):
-#   Stufe 1: VM + Onboarding + Static IP                ✅
-#   Stufe 2: Core config, users, reverse proxy           ✅
-#   Stufe 3: Addons (Z2M, Matter) + MQTT                 ✅
-#   Stufe 4: Backup & Restore                            ← current
 #
 # Modules used:
 #   - community.proxmox.proxmox_kvm   – VM creation, start/stop

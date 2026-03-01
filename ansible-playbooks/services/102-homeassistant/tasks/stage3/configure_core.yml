@@ -1,6 +1,6 @@
 ---
 # ==============================================================================
-# Tasks: Configure HA Core Settings (Stage 2)
+# Tasks: Configure HA Core Settings
 # ==============================================================================
 # Sets timezone, location, unit system, currency and language via the
 # config/core/update WebSocket command.  This is a PATCH-style operation –

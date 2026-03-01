@@ -2,13 +2,13 @@
 # ==============================================================================
 # Tasks: Setup HA Native Backup with NAS Storage (via Proxmox host)
 # ==============================================================================
-# Configures HA's native backup system (introduced in 2025.1) with
-# automatic scheduling and retention policies.  Backups are created
-# locally inside HAOS and then copied to the NAS via the Proxmox host's
-# already-mounted NFS share ({{ nas_backup_mount }}).
+# Configures HA's native backup system with automatic scheduling and
+# retention policies.  Backups are created locally inside HAOS and then
+# copied to the NAS via the Proxmox host's NFS share
+# ({{ nas_backup_mount }}).  Stage 5 (create_backup) handles the copy.
 #
 # The NAS NFS export only allows the Proxmox host IP, so HAOS cannot
-# mount it directly.  Stage 5 (create_backup) handles the NAS copy.
+# mount it directly.
 #
 # Components configured:
 #   1. Backup directory on NAS (via Proxmox host mount)
@@ -16,21 +16,19 @@
 #   3. Schedule (daily, HA default time ~04:45)
 #   4. Retention (configurable number of local copies)
 #
-# Cleanup: Removes legacy custom backup scripts and cron if present.
-#
 # Idempotent: Safe to run on every playbook execution.
 # ==============================================================================
 
 # ------------------------------------------------------------------
-# Cleanup: Remove legacy custom backup infrastructure
+# Cleanup: Remove unused backup scripts and cron
 # ------------------------------------------------------------------
-- name: Remove legacy backup cron job (if exists)
+- name: Remove unused backup cron job (if exists)
   ansible.builtin.cron:
     name: "HA daily backup to NAS"
     user: root
     state: absent
 
-- name: Remove legacy backup scripts (if exist)
+- name: Remove unused backup scripts (if exist)
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent
@@ -38,7 +36,7 @@
     - /usr/local/bin/ha_backup.sh
     - /usr/local/bin/ha_restore.sh
 
-- name: Remove legacy refresh token file (if exists)
+- name: Remove unused refresh token file (if exists)
   ansible.builtin.file:
     path: /etc/ha_backup_refresh_token
     state: absent
@@ -110,4 +108,4 @@
       local agent=hassio.local,
       NAS copy via Proxmox host mount={{ nas_backup_mount }}/homeassistant/homeassistant,
       retention={{ ha_backup_keep_count }} copies,
-      schedule=daily (HA default ~04:45)
+      schedule=daily (HA default ~04:45)1 

@@ -1,6 +1,6 @@
 ---
 # ==============================================================================
-# Tasks: Create Additional HA Users (Stage 2)
+# Tasks: Create Additional HA Users
 # ==============================================================================
 # Creates the default user (for daily use) and the machine user (for
 # service-to-service API access) via the ha_supervisor_api.py create-user
