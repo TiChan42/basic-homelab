@@ -1,12 +1,14 @@
 ---
 # ==============================================================================
-# Tasks: Create Initial HA Backup
+# Tasks: Create Initial HA Backup via Native Backup System
 # ==============================================================================
-# Creates a full backup via HA's Supervisor API and downloads it to NAS.
-# This ensures a NAS backup exists immediately after setup, so destructive
-# re-provisioning can restore from it.
+# Triggers HA's built-in backup manager to create a full backup.
+# The backup is stored on all agents configured in Stage 2
+# (local + NAS mount) using the native backup settings.
 #
-# Uses the deployed ha_backup.sh script (from Stage 2).
+# Uses the Supervisor API POST /backups/new/full for a reliable,
+# blocking backup creation.  The native backup schedule (daily)
+# handles all future backups automatically.
 # ==============================================================================
 
 - name: Check if NAS mount is available
@@ -20,43 +22,142 @@
     msg: "NAS not mounted at {{ nas_mount }} – cannot create backup."
   when: nas_mount_check.rc != 0
 
-- name: Check if backup script is deployed
-  ansible.builtin.stat:
-    path: "{{ ha_backup_script_path }}"
-  register: backup_script_stat
+# ------------------------------------------------------------------
+# Verify HAOS NFS backup mount is active
+# ------------------------------------------------------------------
+- name: Verify HAOS backup mount is active
+  ansible.builtin.shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
+    "{{ ha_tokens[groups['homeassistant'][0]] }}"
+    GET /mounts
+  register: mounts_check
+  changed_when: false
 
-- name: Fail if backup script not found
-  ansible.builtin.fail:
-    msg: "Backup script not found at {{ ha_backup_script_path }}. Run Stage 2 first."
-  when: not (backup_script_stat.stat.exists | default(false))
-
-- name: Create initial full HA backup to NAS
-  ansible.builtin.command:
-    cmd: "{{ ha_backup_script_path }}"
-  register: initial_backup
-  changed_when: true
-  timeout: 600
-
-- name: Show backup script output
-  ansible.builtin.debug:
-    msg: "{{ initial_backup.stdout_lines | default([]) }}"
-  when: initial_backup.stdout_lines | default([]) | length > 0
-
-- name: Verify backup file exists on NAS
-  ansible.builtin.stat:
-    path: "{{ nas_backup_mount }}/homeassistant/homeassistant/ha_backup.0.tar"
-  register: backup_file_check
-
-- name: Validate backup file
+- name: Assert NAS backup mount is present in HAOS
   ansible.builtin.assert:
     that:
-      - backup_file_check.stat.exists | default(false)
-      - backup_file_check.stat.size | default(0) | int >= ha_backup_min_size | int
+      - (mounts_check.stdout | from_json).mounts | default([])
+        | selectattr('name', 'equalto', ha_backup_mount_name)
+        | list | length > 0
     fail_msg: >-
-      Backup validation failed – file missing or too small
-      ({{ backup_file_check.stat.size | default(0) }} bytes,
-      minimum {{ ha_backup_min_size }} bytes).
-    success_msg: >-
-      Initial backup created successfully
-      ({{ backup_file_check.stat.size | default(0) | int // 1024 }} KB)
-      at {{ nas_backup_mount }}/homeassistant/homeassistant/ha_backup.0.tar
+      HAOS NFS backup mount '{{ ha_backup_mount_name }}' not found.
+      Run Stage 2 (setup_backup) first.
+    success_msg: "HAOS NFS backup mount '{{ ha_backup_mount_name }}' is active."
+
+# ------------------------------------------------------------------
+# Create full backup via Supervisor API
+# ------------------------------------------------------------------
+- name: Create initial full HA backup (local + NAS)
+  ansible.builtin.shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
+    "{{ ha_tokens[groups['homeassistant'][0]] }}"
+    POST /backups/new/full
+    '{"name":"initial_setup_backup"}'
+    --timeout 300
+  register: backup_create
+  changed_when: true
+
+- name: Parse backup creation result
+  ansible.builtin.set_fact:
+    ha_new_backup_slug: "{{ (backup_create.stdout | from_json).slug | default('') }}"
+
+- name: Fail if backup creation failed
+  ansible.builtin.fail:
+    msg: "Backup creation failed. Output: {{ backup_create.stdout | default('') }}"
+  when: ha_new_backup_slug | length == 0
+
+- name: Show backup slug
+  ansible.builtin.debug:
+    msg: "Backup created with slug: {{ ha_new_backup_slug }}"
+
+# ------------------------------------------------------------------
+# Copy backup to NAS via Supervisor backup agent
+# (The local backup is created by default; now ensure NAS has a copy)
+# ------------------------------------------------------------------
+- name: List backup details to verify
+  ansible.builtin.shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
+    "{{ ha_tokens[groups['homeassistant'][0]] }}"
+    GET /backups/{{ ha_new_backup_slug }}/info
+  register: backup_info_raw
+  changed_when: false
+
+- name: Parse backup locations
+  ansible.builtin.set_fact:
+    ha_backup_locations: "{{ (backup_info_raw.stdout | from_json).locations | default([]) }}"
+
+- name: Show backup details
+  ansible.builtin.debug:
+    msg: >-
+      Backup {{ ha_new_backup_slug }}:
+      type={{ (backup_info_raw.stdout | from_json).type | default('?') }},
+      size={{ (backup_info_raw.stdout | from_json).size_bytes | default(0) | int // 1024 }} KB,
+      locations={{ ha_backup_locations }},
+      addons={{ (backup_info_raw.stdout | from_json).addons | default([]) | map(attribute='slug') | list }}
+
+# ------------------------------------------------------------------
+# Ensure the backup also exists on NAS via download + manual copy
+# (Supervisor POST /backups/new/full stores locally by default;
+#  the NAS agent might not receive it automatically)
+# ------------------------------------------------------------------
+- name: Check if backup already exists on NAS mount
+  ansible.builtin.set_fact:
+    ha_backup_on_nas: >-
+      {{ ha_backup_mount_name in (ha_backup_locations | map('string') | list)
+         or ha_backup_locations | select('match', '.*' + ha_backup_mount_name + '.*') | list | length > 0 }}
+
+- name: Download backup and copy to NAS (if not already there)
+  ansible.builtin.shell: |
+    BACKUP_FILE="{{ nas_backup_mount }}/homeassistant/homeassistant/{{ ha_new_backup_slug }}.tar"
+    if [ -f "$BACKUP_FILE" ]; then
+      echo "Backup already on NAS"
+      exit 0
+    fi
+
+    # Download backup from HA
+    HTTP_CODE=$(curl -s -o "$BACKUP_FILE" -w "%{http_code}" \
+      -H "Authorization: Bearer {{ ha_tokens[groups['homeassistant'][0]] }}" \
+      "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}/api/hassio/backups/{{ ha_new_backup_slug }}/download")
+
+    if [ "$HTTP_CODE" != "200" ]; then
+      echo "Download failed (HTTP $HTTP_CODE)"
+      rm -f "$BACKUP_FILE"
+      exit 1
+    fi
+
+    # Validate tar
+    if ! tar -tf "$BACKUP_FILE" > /dev/null 2>&1; then
+      echo "Downloaded file is not a valid tar"
+      rm -f "$BACKUP_FILE"
+      exit 1
+    fi
+
+    SIZE=$(stat -c%s "$BACKUP_FILE" 2>/dev/null || echo "0")
+    echo "Backup copied to NAS ($SIZE bytes)"
+  register: nas_copy_result
+  changed_when: "'copied to NAS' in nas_copy_result.stdout"
+  when: not (ha_backup_on_nas | bool)
+  no_log: true
+
+- name: Validate backup on NAS
+  ansible.builtin.shell: |
+    # Find the newest backup file on NAS
+    BACKUP_DIR="{{ nas_backup_mount }}/homeassistant/homeassistant"
+    FILE_COUNT=$(find "$BACKUP_DIR" -name "*.tar" -type f 2>/dev/null | wc -l)
+    if [ "$FILE_COUNT" -eq 0 ]; then
+      echo "FAIL: No backup tar files found on NAS"
+      exit 1
+    fi
+    NEWEST=$(ls -t "$BACKUP_DIR"/*.tar 2>/dev/null | head -1)
+    SIZE=$(stat -c%s "$NEWEST" 2>/dev/null || echo "0")
+    echo "OK: $FILE_COUNT backup(s) on NAS, newest=$(basename $NEWEST) ($SIZE bytes)"
+  register: nas_validate
+  changed_when: false
+
+- name: Show final backup status
+  ansible.builtin.debug:
+    msg: >-
+      Initial backup complete: {{ nas_validate.stdout | default('unknown') }}

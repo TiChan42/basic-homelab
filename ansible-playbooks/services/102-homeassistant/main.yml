@@ -11,7 +11,7 @@
 #      Skipped when VM is healthy + correct HAOS version.
 #
 #   2. Backup Strategy                 (tasks/stage2/)
-#      Deploy backup/restore scripts + cron.  Idempotent, always runs.
+#      NFS mount in HAOS + native backup config.  Idempotent, always runs.
 #
 #   3. HA Configuration                (tasks/stage3/)
 #      Core config, users, addons, MQTT, reverse proxy.
@@ -22,7 +22,7 @@
 #      Attempts small repairs when possible.
 #
 #   5. Backup Creation                 (tasks/stage5/)
-#      Creates a fresh backup only if Stage 4 reports healthy.
+#      Triggers native HA backup to local + NAS.
 #
 # Implementation milestones (Stufen):
 #   Stufe 1: VM + Onboarding + Static IP                ✅
