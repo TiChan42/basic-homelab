@@ -195,6 +195,28 @@
         {{ ha_tokens[item] }}
         POST /addons/{{ z2m_slug }}/start
   register: z2m_start
+  retries: 3
+  delay: 15
+  until: z2m_start.rc == 0
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (z2m_running | bool)
+
+- name: Wait for Zigbee2MQTT addon to reach 'started' state
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        GET /addons/{{ z2m_slug }}/info
+  register: z2m_state_check
+  retries: 12
+  delay: 10
+  until: >-
+    z2m_state_check.rc == 0
+    and (z2m_state_check.stdout | from_json).get('state', '') == 'started'
+  changed_when: false
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
@@ -406,6 +428,28 @@
         {{ ha_tokens[item] }}
         POST /addons/{{ matter_slug }}/start
   register: matter_start
+  retries: 3
+  delay: 15
+  until: matter_start.rc == 0
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - not (matter_running | bool)
+
+- name: Wait for Matter Server addon to reach 'started' state
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        GET /addons/{{ matter_slug }}/info
+  register: matter_state_check
+  retries: 12
+  delay: 10
+  until: >-
+    matter_state_check.rc == 0
+    and (matter_state_check.stdout | from_json).get('state', '') == 'started'
+  changed_when: false
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens

@@ -169,7 +169,7 @@ ha_usb_extra_devices: []
 # Zigbee2MQTT
 ha_z2m_mqtt_broker_ip: "{{ hostvars['mqtt-broker']['ansible_host'] | default('192.168.1.101') }}"
 ha_z2m_serial_port: "/dev/ttyUSB0"
-ha_z2m_serial_adapter: "ezsp"                    # ezsp, zstack, deconz, zigate
+ha_z2m_serial_adapter: "ember"                    # ember (MG24/EFR32), ezsp (legacy <7.4), zstack, deconz, zigate
 
 # HA Native Backup settings (uses HA's built-in backup manager since 2025.1)
 
