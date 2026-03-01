@@ -78,7 +78,7 @@
 - name: Set password file permissions
   file:
     path: "{{ mqtt_password_file }}"
-    owner: mosquitto
-    group: mosquitto
-    mode: '0600'
+    owner: root
+    group: root
+    mode: '0644'
   when: mqtt_auth_enabled | default(true) | bool

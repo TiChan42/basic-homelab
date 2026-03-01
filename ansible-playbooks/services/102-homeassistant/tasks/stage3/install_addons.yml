@@ -212,6 +212,100 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
+# --- Fix Z2M configuration.yaml ---------------------------------------------------
+# Z2M 2.x writes configuration.yaml with potentially unquoted YAML-special
+# characters (', {, <, etc.) in the MQTT password, causing parse errors.
+# Also disables the onboarding wizard and sets log level to info.
+# Uses QEMU Guest Agent to patch the file directly on HAOS filesystem.
+# ----------------------------------------------------------------------------------
+
+- name: Wait for Z2M configuration.yaml to exist
+  ansible.builtin.shell: >-
+    qm guest exec {{ hostvars[item]['service_id'] }} --
+    test -f /mnt/data/supervisor/homeassistant/zigbee2mqtt/configuration.yaml
+  register: z2m_config_wait
+  retries: 24
+  delay: 5
+  until: >-
+    z2m_config_wait.rc == 0
+    and (z2m_config_wait.stdout | from_json).get('exitcode', 1) == 0
+  changed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Fix Z2M configuration (onboarding + MQTT password quoting + log level)
+  ansible.builtin.shell: |
+    python3 << 'PYEOF'
+    import json, subprocess, re, sys
+
+    vmid = "{{ hostvars[item]['service_id'] }}"
+    config_path = "/mnt/data/supervisor/homeassistant/zigbee2mqtt/configuration.yaml"
+
+    # Read current config via QEMU Guest Agent
+    result = subprocess.run(
+        ["qm", "guest", "exec", vmid, "--", "cat", config_path],
+        capture_output=True, text=True
+    )
+    data = json.loads(result.stdout)
+    if data.get("exitcode", 1) != 0:
+        print("SKIP")
+        sys.exit(0)
+
+    content = data["out-data"]
+    original = content
+
+    # 1. Disable onboarding wizard (Z2M 2.x sets this to true on first start)
+    content = content.replace("onboarding: true", "onboarding: false")
+
+    # 2. Quote MQTT password if it contains unquoted YAML-special characters
+    #    Matches '  password: <value>' where value does NOT start with a quote
+    content = re.sub(
+        r'(  password: )([^"\n].*)',
+        lambda m: m.group(1) + '"' + m.group(2) + '"',
+        content
+    )
+
+    # 3. Set log level to info (Z2M default for new installs is often debug)
+    content = content.replace("log_level: debug", "log_level: info")
+
+    if content != original:
+        proc = subprocess.run(
+            ["qm", "guest", "exec", vmid, "--pass-stdin", "1", "--timeout", "60",
+             "--", "/bin/sh", "-c", "cat > " + config_path],
+            input=content, text=True, capture_output=True
+        )
+        write_result = json.loads(proc.stdout)
+        if write_result.get("exitcode", 1) == 0:
+            print("CHANGED")
+        else:
+            print("WRITE_FAILED: " + proc.stdout)
+            sys.exit(1)
+    else:
+        print("OK")
+    PYEOF
+  register: z2m_config_fix
+  changed_when: "'CHANGED' in z2m_config_fix.stdout"
+  loop: "{{ groups['homeassistant'] }}"
+  when: item in ha_tokens
+
+- name: Restart Z2M addon after configuration fix
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        POST /addons/{{ z2m_slug }}/restart
+        --timeout 60
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - z2m_config_fix is changed
+
+- name: Wait for Z2M to connect to MQTT after restart
+  ansible.builtin.pause:
+    seconds: 15
+  when: z2m_config_fix is changed
+
 # ╔════════════════════════════════════════════════════════════╗
 # ║  Matter Server                                            ║
 # ╚════════════════════════════════════════════════════════════╝
