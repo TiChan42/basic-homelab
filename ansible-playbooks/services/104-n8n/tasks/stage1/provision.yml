@@ -1,3 +1,113 @@
 ---
-- name: Provision n8n container on Proxmox
-  include_tasks: "../provision_container.yml"
+# ==============================================================================
+# Stage 1: Provision n8n LXC on Proxmox host
+# ==============================================================================
+
+- name: "n8n (Stage 1) - Ensure Proxmox API Python library is installed"
+  ansible.builtin.apt:
+    name: python3-proxmoxer
+    state: present
+    update_cache: yes
+
+- name: "n8n (Stage 1) - Get available local LXC templates"
+  ansible.builtin.command: pveam list local
+  register: pveam_list
+  changed_when: false
+
+- name: "n8n (Stage 1) - Download default LXC template when missing"
+  ansible.builtin.command: "pveam download local {{ default_lxc_template.split('/')[-1] }}"
+  when: default_lxc_template.split('/')[-1] not in pveam_list.stdout
+
+- name: "n8n (Stage 1) - Ensure NAS backup directory exists"
+  ansible.builtin.file:
+    path: "{{ nas_backup_mount }}/n8n"
+    state: directory
+    mode: '0777'
+
+- name: "n8n (Stage 1) - Create n8n LXC container"
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_token_id: "{{ proxmox_api_token_id }}"
+    api_token_secret: "{{ proxmox_api_token_secret }}"
+    node: "{{ proxmox_node }}"
+    vmid: "{{ hostvars[item]['service_id'] }}"
+    hostname: "{{ item }}"
+    ostemplate: "{{ default_lxc_template }}"
+    cores: "{{ n8n_container_cores }}"
+    memory: "{{ n8n_container_memory }}"
+    swap: 512
+    disk: "{{ n8n_container_rootfs }}"
+    netif:
+      net0: "name=eth0,bridge=vmbr0,hwaddr={{ n8n_container_mac | default('BC:24:11:00:01:04') }},ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
+    pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
+    onboot: yes
+    state: present
+  loop: "{{ groups['n8n'] }}"
+  loop_control:
+    label: "{{ item }} (VMID {{ hostvars[item]['service_id'] }})"
+
+- name: "n8n (Stage 1) - Read container config"
+  ansible.builtin.command: "pct config {{ hostvars[item]['service_id'] }}"
+  register: n8n_pct_config
+  changed_when: false
+  loop: "{{ groups['n8n'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "n8n (Stage 1) - Configure NAS bind mount on container"
+  ansible.builtin.command: "pct set {{ hostvars[item.item]['service_id'] }} -mp0 {{ nas_mount }},mp={{ nas_mount }}"
+  when: "'mp0:' not in item.stdout"
+  register: n8n_bind_mount_set
+  changed_when: true
+  loop: "{{ n8n_pct_config.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "n8n (Stage 1) - Ensure n8n container is running"
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_token_id: "{{ proxmox_api_token_id }}"
+    api_token_secret: "{{ proxmox_api_token_secret }}"
+    node: "{{ proxmox_node }}"
+    vmid: "{{ hostvars[item]['service_id'] }}"
+    hostname: "{{ item }}"
+    state: started
+  loop: "{{ groups['n8n'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "n8n (Stage 1) - Wait for SSH"
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[item]['ansible_host'] }}"
+    port: 22
+    timeout: 60
+    delay: 5
+    search_regex: OpenSSH
+  loop: "{{ groups['n8n'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "n8n (Stage 1) - Add DNS entry to /etc/hosts"
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "{{ hostvars[item]['ansible_host'] }} {{ item }}"
+    state: present
+    mode: '0644'
+  loop: "{{ groups['n8n'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "n8n (Stage 1) - Configure port forwarding"
+  ansible.builtin.iptables:
+    table: nat
+    chain: PREROUTING
+    protocol: tcp
+    destination_port: "{{ hostvars[item]['service_frontend_port'] }}"
+    jump: DNAT
+    to_destination: "{{ hostvars[item]['ansible_host'] }}:{{ hostvars[item]['service_backend_port'] }}"
+    comment: "Forward n8n {{ hostvars[item]['service_frontend_port'] }} -> {{ item }}"
+  loop: "{{ groups['n8n'] }}"
+  loop_control:
+    label: "{{ item }} (:{{ hostvars[item]['service_frontend_port'] }})"

@@ -1,9 +1,71 @@
 ---
-- name: Setup backup & restore infrastructure
-  include_tasks: "../setup_backup.yml"
+# ==============================================================================
+# Stage 4: Backup setup and service verification
+# ==============================================================================
 
-- name: Start & verify n8n service
-  include_tasks: "../verify_service.yml"
+- name: "n8n (Stage 4) - Deploy backup script"
+  ansible.builtin.template:
+    src: templates/n8n_backup.sh.j2
+    dest: "{{ n8n_backup_script_path }}"
+    owner: root
+    group: root
+    mode: '0750'
 
-- name: Validate API-based integrations (HA, Node-RED, n8n API)
-  include_tasks: "../stage3/validate_integrations.yml"
+- name: "n8n (Stage 4) - Deploy restore script"
+  ansible.builtin.template:
+    src: templates/n8n_restore.sh.j2
+    dest: "{{ n8n_restore_script_path }}"
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: "n8n (Stage 4) - Deploy restore-on-boot service"
+  ansible.builtin.template:
+    src: templates/n8n-restore.service.j2
+    dest: /etc/systemd/system/n8n-restore.service
+    mode: '0644'
+  register: n8n_restore_service_template
+
+- name: "n8n (Stage 4) - Reload systemd for restore service"
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  when: n8n_restore_service_template.changed
+
+- name: "n8n (Stage 4) - Enable restore-on-boot service"
+  ansible.builtin.systemd:
+    name: n8n-restore
+    enabled: yes
+
+- name: "n8n (Stage 4) - Configure periodic backup cron"
+  ansible.builtin.cron:
+    name: "n8n backup to NAS"
+    minute: "{{ n8n_backup_cron_minute }}"
+    hour: "{{ n8n_backup_cron_hour }}"
+    job: "{{ n8n_backup_script_path }} 2>&1 | logger -t n8n-backup-cron"
+    user: root
+    state: present
+
+- name: "n8n (Stage 4) - Ensure n8n service is active"
+  ansible.builtin.systemd:
+    name: n8n
+    enabled: yes
+    state: started
+
+- name: "n8n (Stage 4) - Verify n8n is listening"
+  ansible.builtin.wait_for:
+    port: "{{ service_backend_port }}"
+    timeout: 30
+
+- name: "n8n (Stage 4) - Show n8n service status"
+  ansible.builtin.command: systemctl status n8n --no-pager -l
+  register: n8n_status
+  changed_when: false
+
+- name: "n8n (Stage 4) - Print n8n service status"
+  ansible.builtin.debug:
+    msg: "{{ n8n_status.stdout_lines }}"
+
+- name: "n8n (Stage 4) - Run initial backup to NAS"
+  ansible.builtin.command: "{{ n8n_backup_script_path }}"
+  changed_when: false
+  failed_when: false

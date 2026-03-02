@@ -1,9 +1,212 @@
 ---
-- name: Configure static networking
-  include_tasks: "../configure_networking.yml"
+# ==============================================================================
+# Stage 2: Configure networking, install runtime, restore data
+# ==============================================================================
 
-- name: Install n8n runtime
-  include_tasks: "../install_n8n.yml"
+- name: "n8n (Stage 2) - Install system dependencies"
+  ansible.builtin.apt:
+    name:
+      - git
+      - curl
+      - gnupg
+      - nfs-common
+      - build-essential
+      - python3
+    state: present
+    update_cache: yes
 
-- name: Restore backup from NAS (if needed)
-  include_tasks: "../restore_backup.yml"
+- name: "n8n (Stage 2) - Deploy static netplan config"
+  ansible.builtin.template:
+    src: templates/netplan.yaml.j2
+    dest: /etc/netplan/99-ansible-static.yaml
+    mode: '0600'
+  register: n8n_netplan_config
+
+- name: "n8n (Stage 2) - Remove conflicting netplan defaults"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/netplan/50-cloud-init.yaml
+    - /etc/netplan/00-installer-config.yaml
+  register: n8n_netplan_cleanup
+
+- name: "n8n (Stage 2) - Apply netplan"
+  ansible.builtin.command: netplan apply
+  when: n8n_netplan_config.changed or n8n_netplan_cleanup.changed
+
+- name: "n8n (Stage 2) - Install NodeSource apt key"
+  ansible.builtin.get_url:
+    url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+    dest: /tmp/nodesource-repo.gpg.key
+    mode: '0644'
+
+- name: "n8n (Stage 2) - Create NodeSource keyring"
+  ansible.builtin.command:
+    cmd: gpg --dearmor -o /usr/share/keyrings/nodesource.gpg /tmp/nodesource-repo.gpg.key
+    creates: /usr/share/keyrings/nodesource.gpg
+
+- name: "n8n (Stage 2) - Configure NodeSource repository"
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/nodesource.list
+    mode: '0644'
+    content: "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_{{ n8n_node_version }}.x nodistro main\n"
+
+- name: "n8n (Stage 2) - Install Node.js"
+  ansible.builtin.apt:
+    name: nodejs
+    state: present
+    update_cache: yes
+
+- name: "n8n (Stage 2) - Resolve target n8n version from npm registry"
+  ansible.builtin.command: npm view n8n version
+  register: n8n_latest_version_cmd
+  changed_when: false
+
+- name: "n8n (Stage 2) - Set target n8n version"
+  ansible.builtin.set_fact:
+    n8n_target_version: "{{ n8n_latest_version_cmd.stdout | trim }}"
+
+- name: "n8n (Stage 2) - Resolve npm global module root"
+  ansible.builtin.command: npm root -g
+  register: n8n_npm_root
+  changed_when: false
+
+- name: "n8n (Stage 2) - Check installed n8n version"
+  ansible.builtin.command: n8n --version
+  register: n8n_binary_check
+  changed_when: false
+  failed_when: false
+
+- name: "n8n (Stage 2) - Set installed n8n version"
+  ansible.builtin.set_fact:
+    n8n_installed_version: >-
+      {{
+        (n8n_binary_check.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+') | default(''))
+        if (n8n_binary_check.rc | default(1)) == 0
+        else ''
+      }}
+
+- name: "n8n (Stage 2) - Determine if n8n install/update is needed"
+  ansible.builtin.set_fact:
+    n8n_install_required: >-
+      {{
+        ((n8n_binary_check.rc | default(1)) != 0)
+        or (n8n_installed_version != n8n_target_version)
+      }}
+
+- name: "n8n (Stage 2) - Remove stale n8n global module"
+  ansible.builtin.file:
+    path: "{{ n8n_npm_root.stdout | trim }}/n8n"
+    state: absent
+  when: n8n_install_required | bool
+
+- name: "n8n (Stage 2) - Uninstall existing global n8n"
+  ansible.builtin.command: npm uninstall -g n8n
+  register: n8n_uninstall
+  failed_when: false
+  changed_when: n8n_uninstall.rc == 0
+  when: n8n_install_required | bool
+
+- name: "n8n (Stage 2) - Install pinned latest n8n globally"
+  ansible.builtin.command: "npm install -g n8n@{{ n8n_target_version }} --force"
+  register: n8n_install
+  retries: 2
+  delay: 5
+  until: n8n_install.rc == 0
+  when: n8n_install_required | bool
+
+- name: "n8n (Stage 2) - Verify installed n8n version"
+  ansible.builtin.command: n8n --version
+  register: n8n_version_check
+  changed_when: false
+
+- name: "n8n (Stage 2) - Ensure n8n data directory exists"
+  ansible.builtin.file:
+    path: "{{ n8n_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: "n8n (Stage 2) - Ensure NAS backup directory exists"
+  ansible.builtin.file:
+    path: "{{ nas_backup_mount }}/n8n"
+    state: directory
+    mode: '0777'
+
+- name: "n8n (Stage 2) - Stop n8n before restore check"
+  ansible.builtin.systemd:
+    name: n8n
+    state: stopped
+  failed_when: false
+
+- name: "n8n (Stage 2) - Check local n8n database"
+  ansible.builtin.stat:
+    path: "{{ n8n_data_dir }}/database.sqlite"
+  register: n8n_db_file
+
+- name: "n8n (Stage 2) - Count workflows in local database"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import sqlite3
+        try:
+            conn = sqlite3.connect('{{ n8n_data_dir }}/database.sqlite')
+            c = conn.cursor()
+            c.execute('PRAGMA wal_checkpoint(FULL)')
+            c.execute('SELECT COUNT(*) FROM workflow_entity')
+            print(c.fetchone()[0])
+            conn.close()
+        except Exception:
+            print(0)
+  register: n8n_workflow_count
+  when: n8n_db_file.stat.exists
+  failed_when: false
+  changed_when: false
+
+- name: "n8n (Stage 2) - Remove empty local database to allow restore"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ n8n_data_dir }}/database.sqlite"
+    - "{{ n8n_data_dir }}/database.sqlite-wal"
+    - "{{ n8n_data_dir }}/database.sqlite-shm"
+  when:
+    - n8n_db_file.stat.exists
+    - (n8n_workflow_count.stdout | default('0') | trim) == '0'
+
+- name: "n8n (Stage 2) - Re-check local n8n database"
+  ansible.builtin.stat:
+    path: "{{ n8n_data_dir }}/database.sqlite"
+  register: n8n_db_file_after_cleanup
+
+- name: "n8n (Stage 2) - Find available numbered backup archives"
+  ansible.builtin.stat:
+    path: "{{ nas_backup_mount }}/n8n/n8n_backup.{{ item }}.tar.gz"
+  register: n8n_backup_candidates
+  loop: "{{ range(0, n8n_backup_keep_count) | list }}"
+  when: not n8n_db_file_after_cleanup.stat.exists
+
+- name: "n8n (Stage 2) - Select best backup archive"
+  ansible.builtin.set_fact:
+    n8n_restore_archive: >-
+      {{
+        (n8n_backup_candidates.results | default([])
+          | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists')
+          | first).stat.path | default('')
+      }}
+  when: not n8n_db_file_after_cleanup.stat.exists
+
+- name: "n8n (Stage 2) - Restore n8n data from archive"
+  ansible.builtin.unarchive:
+    src: "{{ n8n_restore_archive }}"
+    dest: /
+    remote_src: yes
+  when:
+    - not n8n_db_file_after_cleanup.stat.exists
+    - n8n_restore_archive | default('') | length > 0
