@@ -3,28 +3,28 @@
 #
 # Läuft im Container (hosts: n8n).
 
-- name: Start and enable n8n
+- name: "n8n (Legacy) - Start and enable n8n"
   systemd:
     name: n8n
     enabled: yes
     state: started
     daemon_reload: yes
 
-- name: Verify n8n is listening
+- name: "n8n (Legacy) - Verify n8n is listening"
   wait_for:
     port: "{{ service_backend_port }}"
     timeout: 30
 
-- name: Show n8n status
+- name: "n8n (Legacy) - Show n8n status"
   command: systemctl status n8n --no-pager -l
   register: n8n_status
   changed_when: false
 
-- name: Print n8n status
+- name: "n8n (Legacy) - Print n8n status"
   debug:
     msg: "{{ n8n_status.stdout_lines }}"
 
-- name: Run initial backup to NAS
+- name: "n8n (Legacy) - Run initial backup to NAS"
   command: "{{ n8n_backup_script_path }}"
   changed_when: false
   failed_when: false

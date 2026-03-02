@@ -7,7 +7,7 @@
 # ------------------------------------------------------------------
 # System-Abhängigkeiten
 # ------------------------------------------------------------------
-- name: Install system dependencies
+- name: "n8n (Legacy) - Install system dependencies"
   apt:
     name:
       - git
@@ -22,21 +22,21 @@
 # ------------------------------------------------------------------
 # Node.js (via NodeSource)
 # ------------------------------------------------------------------
-- name: Add NodeSource GPG keyring
+- name: "n8n (Legacy) - Add NodeSource GPG keyring"
   shell: |
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
       | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
   args:
     creates: /usr/share/keyrings/nodesource.gpg
 
-- name: Add Node.js repository
+- name: "n8n (Legacy) - Add Node.js repository"
   copy:
     dest: /etc/apt/sources.list.d/nodesource.list
     content: "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_{{ n8n_node_version }}.x nodistro main\n"
     mode: '0644'
   register: nodesource_repo
 
-- name: Install Node.js
+- name: "n8n (Legacy) - Install Node.js"
   apt:
     name: nodejs
     state: present
@@ -45,27 +45,27 @@
 # ------------------------------------------------------------------
 # n8n (global, neueste stabile Version - robust gegen ENOTEMPTY)
 # ------------------------------------------------------------------
-- name: Resolve latest n8n version from npm registry
+- name: "n8n (Legacy) - Resolve latest n8n version from npm registry"
   command: npm view n8n version
   register: n8n_latest_version_cmd
   changed_when: false
 
-- name: Set target n8n version fact
+- name: "n8n (Legacy) - Set target n8n version fact"
   set_fact:
     n8n_target_version: "{{ n8n_latest_version_cmd.stdout | trim }}"
 
-- name: Resolve npm global module root
+- name: "n8n (Legacy) - Resolve npm global module root"
   command: npm root -g
   register: npm_root_global
   changed_when: false
 
-- name: Check n8n binary availability
+- name: "n8n (Legacy) - Check n8n binary availability"
   command: n8n --version
   register: n8n_binary_check
   changed_when: false
   failed_when: false
 
-- name: Set installed n8n version fact from binary
+- name: "n8n (Legacy) - Set installed n8n version fact from binary"
   set_fact:
     n8n_installed_version: >-
       {{
@@ -74,7 +74,7 @@
         else ''
       }}
 
-- name: Determine whether n8n install/update is required
+- name: "n8n (Legacy) - Determine whether n8n install/update is required"
   set_fact:
     n8n_install_required: >-
       {{
@@ -82,13 +82,13 @@
         or (n8n_installed_version != n8n_target_version)
       }}
 
-- name: Remove old n8n package before upgrade (avoids ENOTEMPTY rename issues)
+- name: "n8n (Legacy) - Remove old n8n package before upgrade (avoids ENOTEMPTY rename issues)"
   file:
     path: "{{ npm_root_global.stdout | trim }}/n8n"
     state: absent
   when: n8n_install_required | bool
 
-- name: Install pinned latest n8n globally
+- name: "n8n (Legacy) - Install pinned latest n8n globally"
   shell: |
     set -euo pipefail
     npm uninstall -g n8n >/dev/null 2>&1 || true
@@ -103,12 +103,12 @@
   until: n8n_install_result.rc == 0
   when: n8n_install_required | bool
 
-- name: Verify installed n8n version
+- name: "n8n (Legacy) - Verify installed n8n version"
   command: n8n --version
   register: n8n_version_check
   changed_when: false
 
-- name: Ensure n8n data directory exists
+- name: "n8n (Legacy) - Ensure n8n data directory exists"
   file:
     path: "{{ n8n_data_dir }}"
     state: directory

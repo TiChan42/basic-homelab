@@ -8,18 +8,18 @@
 # ------------------------------------------------------------------
 # Konfigurationsdateien
 # ------------------------------------------------------------------
-- name: Check existing n8n instance config for encryption key
+- name: "n8n (Legacy) - Check existing n8n instance config for encryption key"
   stat:
     path: "{{ n8n_data_dir }}/.n8n/config"
   register: n8n_instance_config_stat
 
-- name: Read existing n8n instance config
+- name: "n8n (Legacy) - Read existing n8n instance config"
   slurp:
     src: "{{ n8n_data_dir }}/.n8n/config"
   register: n8n_instance_config_raw
   when: n8n_instance_config_stat.stat.exists
 
-- name: Extract encryption key from existing n8n config
+- name: "n8n (Legacy) - Extract encryption key from existing n8n config"
   set_fact:
     n8n_existing_encryption_key: >-
       {{
@@ -33,7 +33,7 @@
         else ''
       }}
 
-- name: Determine effective n8n encryption key
+- name: "n8n (Legacy) - Determine effective n8n encryption key"
   set_fact:
     n8n_effective_encryption_key: >-
       {{
@@ -44,7 +44,7 @@
           )
       }}
 
-- name: Deploy n8n environment file
+- name: "n8n (Legacy) - Deploy n8n environment file"
   template:
     src: templates/n8n.env.j2
     dest: /etc/n8n.env
@@ -56,7 +56,7 @@
 # ------------------------------------------------------------------
 # Systemd Service
 # ------------------------------------------------------------------
-- name: Deploy n8n systemd service
+- name: "n8n (Legacy) - Deploy n8n systemd service"
   template:
     src: templates/n8n.service.j2
     dest: /etc/systemd/system/n8n.service

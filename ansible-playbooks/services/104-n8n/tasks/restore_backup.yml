@@ -6,24 +6,24 @@
 # Eine leere Datenbank (0 Workflows, z.B. nach Auto-Start) wird entfernt,
 # damit ein vorhandenes NAS-Backup wiederhergestellt werden kann.
 
-- name: Ensure n8n backup directory on NAS exists
+- name: "n8n (Legacy) - Ensure n8n backup directory on NAS exists"
   file:
     path: "{{ nas_backup_mount }}/n8n"
     state: directory
     mode: '0777'
 
-- name: Stop n8n before restore check (in case of re-run)
+- name: "n8n (Legacy) - Stop n8n before restore check (in case of re-run)"
   systemd:
     name: n8n
     state: stopped
   failed_when: false
 
-- name: Check if local n8n database exists
+- name: "n8n (Legacy) - Check if local n8n database exists"
   stat:
     path: "{{ n8n_data_dir }}/database.sqlite"
   register: n8n_db_file
 
-- name: Check if existing database has real data (workflows)
+- name: "n8n (Legacy) - Check if existing database has real data (workflows)"
   shell: |
     python3 -c "
     import sqlite3
@@ -41,7 +41,7 @@
   failed_when: false
   changed_when: false
 
-- name: Remove empty database to allow restore from NAS backup
+- name: "n8n (Legacy) - Remove empty database to allow restore from NAS backup"
   file:
     path: "{{ item }}"
     state: absent
@@ -53,19 +53,19 @@
     - n8n_db_file.stat.exists
     - (n8n_workflow_count.stdout | default('0') | trim) == '0'
 
-- name: Re-check if local n8n database exists after cleanup
+- name: "n8n (Legacy) - Re-check if local n8n database exists after cleanup"
   stat:
     path: "{{ n8n_data_dir }}/database.sqlite"
   register: n8n_db_file
 
-- name: Find available NAS backup archives (numbered, 0 = newest)
+- name: "n8n (Legacy) - Find available NAS backup archives (numbered, 0 = newest)"
   stat:
     path: "{{ nas_backup_mount }}/n8n/n8n_backup.{{ item }}.tar.gz"
   register: nas_backup_candidates
   loop: "{{ range(0, n8n_backup_keep_count) | list }}"
   when: not n8n_db_file.stat.exists
 
-- name: Set best available backup to restore from
+- name: "n8n (Legacy) - Set best available backup to restore from"
   set_fact:
     n8n_restore_archive: >-
       {{ (nas_backup_candidates.results | default([])
@@ -74,7 +74,7 @@
           | first).stat.path | default('') }}
   when: not n8n_db_file.stat.exists
 
-- name: Restore n8n data from NAS backup archive
+- name: "n8n (Legacy) - Restore n8n data from NAS backup archive"
   unarchive:
     src: "{{ n8n_restore_archive }}"
     dest: /

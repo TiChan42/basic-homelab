@@ -13,25 +13,25 @@
 # ------------------------------------------------------------------
 # Prerequisites
 # ------------------------------------------------------------------
-- name: Ensure Proxmox API library is installed
+- name: "n8n (Legacy) - Ensure Proxmox API library is installed"
   apt:
     name: python3-proxmoxer
     state: present
     update_cache: yes
 
-- name: Get list of available OS templates
+- name: "n8n (Legacy) - Get list of available OS templates"
   command: "pveam list local"
   register: pveam_list
   changed_when: false
 
-- name: Download OS template if missing
+- name: "n8n (Legacy) - Download OS template if missing"
   command: "pveam download local {{ default_lxc_template.split('/')[-1] }}"
   when: default_lxc_template.split('/')[-1] not in pveam_list.stdout
 
 # ------------------------------------------------------------------
 # Container creation
 # ------------------------------------------------------------------
-- name: Create n8n LXC container
+- name: "n8n (Legacy) - Create n8n LXC container"
   community.proxmox.proxmox:
     api_host: "{{ proxmox_api_host }}"
     api_user: "{{ proxmox_api_user }}"
@@ -57,7 +57,7 @@
 # ------------------------------------------------------------------
 # NAS bind mount (host /mnt/nas → container /mnt/nas)
 # ------------------------------------------------------------------
-- name: Ensure NAS bind mount is configured on n8n container
+- name: "n8n (Legacy) - Ensure NAS bind mount is configured on n8n container"
   shell: |
     VMID={{ hostvars[item]['service_id'] }}
     if pct config $VMID | grep -q "^mp0:"; then
@@ -77,13 +77,13 @@
   loop_control:
     label: "{{ item }}"
 
-- name: Ensure NAS backup directory for n8n exists
+- name: "n8n (Legacy) - Ensure NAS backup directory for n8n exists"
   file:
     path: "{{ nas_backup_mount }}/n8n"
     state: directory
     mode: '0777'
 
-- name: Ensure n8n container is running
+- name: "n8n (Legacy) - Ensure n8n container is running"
   community.proxmox.proxmox:
     api_host: "{{ proxmox_api_host }}"
     api_user: "{{ proxmox_api_user }}"
@@ -97,7 +97,7 @@
   loop_control:
     label: "{{ item }}"
 
-- name: Wait for SSH to become available
+- name: "n8n (Legacy) - Wait for SSH to become available"
   wait_for:
     host: "{{ hostvars[item]['ansible_host'] }}"
     port: 22
@@ -111,7 +111,7 @@
 # ------------------------------------------------------------------
 # Host networking (DNS + Port-Forwarding)
 # ------------------------------------------------------------------
-- name: Add n8n container DNS entry to /etc/hosts
+- name: "n8n (Legacy) - Add n8n container DNS entry to /etc/hosts"
   lineinfile:
     path: /etc/hosts
     line: "{{ hostvars[item]['ansible_host'] }} {{ item }}"
@@ -121,7 +121,7 @@
   loop_control:
     label: "{{ item }}"
 
-- name: Forward n8n port ({{ hostvars[item]['service_frontend_port'] }}) to container
+- name: "n8n (Legacy) - Forward n8n port ({{ hostvars[item]['service_frontend_port'] }}) to container"
   ansible.builtin.iptables:
     table: nat
     chain: PREROUTING

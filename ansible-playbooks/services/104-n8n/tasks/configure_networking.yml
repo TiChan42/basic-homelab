@@ -3,14 +3,14 @@
 #
 # Läuft im Container (hosts: n8n).
 
-- name: Configure static networking (Netplan)
+- name: "n8n (Legacy) - Configure static networking (Netplan)"
   template:
     src: templates/netplan.yaml.j2
     dest: /etc/netplan/99-ansible-static.yaml
     mode: '0600'
   register: netplan_config
 
-- name: Remove conflicting default Netplan configs
+- name: "n8n (Legacy) - Remove conflicting default Netplan configs"
   file:
     path: "{{ item }}"
     state: absent
@@ -19,6 +19,6 @@
     - /etc/netplan/00-installer-config.yaml
   register: netplan_cleanup
 
-- name: Apply network changes
+- name: "n8n (Legacy) - Apply network changes"
   command: netplan apply
   when: netplan_config.changed or netplan_cleanup.changed
