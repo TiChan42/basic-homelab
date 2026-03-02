@@ -7,16 +7,10 @@
 # Re-authenticates afterwards since the IP change may invalidate tokens.
 # ==============================================================================
 
-- name: Deploy Supervisor API WebSocket helper script
-  ansible.builtin.copy:
-    src: files/ha_supervisor_api.py
-    dest: /usr/local/bin/ha_supervisor_api.py
-    mode: '0755'
-
 # ------------------------------------------------------------------
 # Check if IP change is actually needed
 # ------------------------------------------------------------------
-- name: Determine if static IP configuration is needed
+- name: "Homeassistant (Stage 1) - Check if IP change needed"
   ansible.builtin.set_fact:
     ha_ip_change_needed: "{{ ha_initial_ips[item] != hostvars[item]['ansible_host'] }}"
   loop: "{{ groups['homeassistant'] }}"
@@ -25,7 +19,7 @@
 # ------------------------------------------------------------------
 # Apply static IP (only when current IP differs from target)
 # ------------------------------------------------------------------
-- name: Configure static IP address
+- name: "Homeassistant (Stage 1) - Configure static IP"
   ansible.builtin.shell: >-
     echo {{ _ip_body | quote }} |
     python3 /usr/local/bin/ha_supervisor_api.py
@@ -51,7 +45,7 @@
   # The next task verifies the new IP is reachable.
   failed_when: false
 
-- name: Wait for HA to become available on static IP
+- name: "Homeassistant (Stage 1) - Wait for HA on static IP"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/api/"
     method: GET
@@ -62,12 +56,14 @@
   delay: 10
   until: ha_static_check.status in [200, 401]
   loop: "{{ groups['homeassistant'] }}"
-  when: item in ha_tokens
+  when:
+    - item in ha_tokens
+    - ha_ip_change_needed | default(false) | bool
 
 # ------------------------------------------------------------------
-# Re-authenticate on (possibly new) static IP
+# Re-authenticate on new static IP (only when IP actually changed)
 # ------------------------------------------------------------------
-- name: Re-authenticate – initiate login flow
+- name: "Homeassistant (Stage 1) - Re-auth: initiate login flow"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/login_flow"
     method: POST
@@ -84,9 +80,11 @@
     timeout: 30
   register: reauth_login_flow
   loop: "{{ groups['homeassistant'] }}"
-  when: item in ha_tokens
+  when:
+    - item in ha_tokens
+    - ha_ip_change_needed | default(false) | bool
 
-- name: Re-authenticate – submit credentials
+- name: "Homeassistant (Stage 1) - Re-auth: submit credentials"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.json.flow_id }}"
     method: POST
@@ -108,7 +106,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Re-authenticate – exchange auth code for tokens
+- name: "Homeassistant (Stage 1) - Re-auth: exchange tokens"
   ansible.builtin.uri:
     url: "http://{{ hostvars[_host]['ansible_host'] }}:{{ ha_port | default('8123') }}/auth/token"
     method: POST
@@ -130,7 +128,7 @@
   loop_control:
     label: "{{ item.item.item }}"
 
-- name: Update access tokens after re-authentication
+- name: "Homeassistant (Stage 1) - Update tokens after re-auth"
   ansible.builtin.set_fact:
     ha_tokens: "{{ ha_tokens | combine({ _host: item.json.access_token }) }}"
   vars:
@@ -141,12 +139,12 @@
     - item.skipped is not defined or not item.skipped
     - item.status is defined and item.status == 200
 
-- name: Update initial IPs to static IP
+- name: "Homeassistant (Stage 1) - Update IPs to static"
   ansible.builtin.set_fact:
     ha_initial_ips: "{{ ha_initial_ips | combine({item: hostvars[item]['ansible_host']}) }}"
   loop: "{{ groups['homeassistant'] }}"
 
-- name: Flag reboot needed (IP changed)
+- name: "Homeassistant (Stage 1) - Flag reboot needed"
   ansible.builtin.set_fact:
     ha_reboot_needed: true
   when: ha_ip_change_needed | default(false) | bool

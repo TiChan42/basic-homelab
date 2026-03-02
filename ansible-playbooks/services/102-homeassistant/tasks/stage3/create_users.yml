@@ -20,7 +20,7 @@
 # ------------------------------------------------------------------
 # Default user (for daily human use – non-admin)
 # ------------------------------------------------------------------
-- name: "Create default user '{{ default_user }}'"
+- name: "Homeassistant (Stage 3) - Create default user '{{ default_user }}'"
   ansible.builtin.command:
     argv:
       - python3
@@ -47,7 +47,7 @@
     - default_user_result.rc != 0
     - "'already exists' not in (default_user_result.stdout | default(''))"
 
-- name: Show default user creation result
+- name: "Homeassistant (Stage 3) - Show default user result"
   ansible.builtin.debug:
     msg: "User '{{ default_user }}': {{ item.stdout | default('skipped') }}"
   loop: "{{ default_user_result.results | default([]) }}"
@@ -58,7 +58,7 @@
 # ------------------------------------------------------------------
 # Machine user (for service-to-service API access – non-admin)
 # ------------------------------------------------------------------
-- name: "Create machine user '{{ machine_user }}'"
+- name: "Homeassistant (Stage 3) - Create machine user '{{ machine_user }}'"
   ansible.builtin.command:
     argv:
       - python3
@@ -85,7 +85,7 @@
     - machine_user_result.rc != 0
     - "'already exists' not in (machine_user_result.stdout | default(''))"
 
-- name: Show machine user creation result
+- name: "Homeassistant (Stage 3) - Show machine user result"
   ansible.builtin.debug:
     msg: "User '{{ machine_user }}': {{ item.stdout | default('skipped') }}"
   loop: "{{ machine_user_result.results | default([]) }}"

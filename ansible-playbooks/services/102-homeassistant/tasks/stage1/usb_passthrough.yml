@@ -11,12 +11,12 @@
 # Expects module_defaults for group/community.proxmox.proxmox to be set.
 # ==============================================================================
 
-- name: Scan USB bus for connected devices
+- name: "Homeassistant (Stage 1) - Scan USB bus"
   ansible.builtin.command: lsusb
   register: lsusb_output
   changed_when: false
 
-- name: Auto-detect known Zigbee/USB dongles
+- name: "Homeassistant (Stage 1) - Auto-detect Zigbee dongles"
   ansible.builtin.set_fact:
     ha_detected_usb_devices: >-
       {{ ha_known_zigbee_dongles
@@ -24,7 +24,7 @@
          | map(attribute='vid_pid')
          | list }}
 
-- name: Show detected USB dongles
+- name: "Homeassistant (Stage 1) - Show detected USB dongles"
   ansible.builtin.debug:
     msg: |
       Detected {{ ha_detected_usb_devices | length }} known dongle(s): {{ ha_detected_usb_devices | join(', ') }}
@@ -34,13 +34,13 @@
       Connected USB: {{ lsusb_output.stdout_lines | join(', ') }}
       {% endif %}
 
-- name: Merge auto-detected with manually specified USB devices
+- name: "Homeassistant (Stage 1) - Merge USB device lists"
   ansible.builtin.set_fact:
     ha_usb_final_devices: >-
       {{ (ha_detected_usb_devices + ha_usb_extra_devices) | unique | list }}
 
 # Build a single USB passthrough dictionary: { usb0: "host=VID:PID,usb3=1", usb1: ... }
-- name: Build USB passthrough configuration
+- name: "Homeassistant (Stage 1) - Build USB passthrough config"
   ansible.builtin.set_fact:
     _usb_passthrough: "{{ _usb_passthrough | default({}) | combine({'usb' ~ idx: 'host=' ~ item ~ ',usb3=1'}) }}"
   loop: "{{ ha_usb_final_devices }}"
@@ -50,7 +50,7 @@
 
 # NOTE: The Proxmox API forbids setting real USB device passthrough with token auth
 # ("only root can set 'usb0' config for real devices"). Fall back to qm set.
-- name: Apply USB passthrough to HA VM via qm set
+- name: "Homeassistant (Stage 1) - Apply USB passthrough"
   ansible.builtin.command: >-
     qm set {{ hostvars[item]['service_id'] }}
     {% for key, val in _usb_passthrough.items() %}
@@ -63,7 +63,7 @@
   register: usb_set_result
   changed_when: "'update VM' in usb_set_result.stdout"
 
-- name: Warn if no USB devices found and none manually specified
+- name: "Homeassistant (Stage 1) - Warn if no USB devices found"
   ansible.builtin.debug:
     msg: >
       WARNING: No USB devices passed through to HA VM!

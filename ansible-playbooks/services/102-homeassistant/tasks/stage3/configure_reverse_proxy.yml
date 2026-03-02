@@ -7,7 +7,7 @@
 # Uses qm guest exec because HAOS has no SSH by default.
 # ==============================================================================
 
-- name: Read current HA configuration.yaml
+- name: "Homeassistant (Stage 3) - Read configuration.yaml"
   ansible.builtin.shell: >-
     qm guest exec {{ hostvars[item]['service_id'] }} --
     cat /mnt/data/supervisor/homeassistant/configuration.yaml
@@ -16,7 +16,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Check if http trusted_proxies is already configured
+- name: "Homeassistant (Stage 3) - Check trusted_proxies config"
   ansible.builtin.set_fact:
     ha_proxy_config_needed: >-
       {{ ha_config_raw.results
@@ -27,11 +27,11 @@
          | select('search', 'trusted_proxies')
          | list | length == 0 }}
 
-- name: Show proxy config status
+- name: "Homeassistant (Stage 3) - Show proxy config status"
   ansible.builtin.debug:
     msg: "HA trusted_proxies configuration {{ 'needed' if ha_proxy_config_needed | bool else 'already present' }}"
 
-- name: Add http trusted_proxies to configuration.yaml
+- name: "Homeassistant (Stage 3) - Add trusted_proxies"
   ansible.builtin.shell: |
     printf '\n# Reverse proxy (Traefik) – managed by Ansible\nhttp:\n  use_x_forwarded_for: true\n  trusted_proxies:\n    - {{ hostvars[groups['traefik'][0]]['ansible_host'] }}\n' | \
     qm guest exec {{ hostvars[item]['service_id'] }} --pass-stdin 1 --timeout 60 -- \
@@ -41,7 +41,7 @@
     - item in ha_tokens
     - ha_proxy_config_needed | bool
 
-- name: Verify configuration.yaml after update
+- name: "Homeassistant (Stage 3) - Verify configuration.yaml"
   ansible.builtin.shell: >-
     qm guest exec {{ hostvars[item]['service_id'] }} --
     cat /mnt/data/supervisor/homeassistant/configuration.yaml
@@ -52,12 +52,12 @@
     - item in ha_tokens
     - ha_proxy_config_needed | bool
 
-- name: Show updated configuration
+- name: "Homeassistant (Stage 3) - Show updated config"
   ansible.builtin.debug:
     msg: "{{ (ha_config_verify.results[0].stdout | from_json)['out-data'] }}"
   when: ha_proxy_config_needed | bool
 
-- name: Restart HA Core to apply http config
+- name: "Homeassistant (Stage 3) - Restart HA Core"
   ansible.builtin.shell: >-
     python3 /usr/local/bin/ha_supervisor_api.py
     "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}"
@@ -74,7 +74,7 @@
   # The next task verifies HA comes back up.
   failed_when: false
 
-- name: Wait for HA to become available after restart
+- name: "Homeassistant (Stage 3) - Wait for HA after restart"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port | default('8123') }}/api/"
     method: GET

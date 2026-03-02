@@ -6,7 +6,7 @@
 # to detect the VM's DHCP IP, then waits for the HA API to be ready.
 # ==============================================================================
 
-- name: Wait for QEMU Guest Agent to become ready
+- name: "Homeassistant (Stage 1) - Wait for QEMU Guest Agent"
   ansible.builtin.command: "qm guest cmd {{ hostvars[item]['service_id'] }} ping"
   register: agent_ping
   retries: 30
@@ -15,7 +15,7 @@
   changed_when: false
   loop: "{{ groups['homeassistant'] }}"
 
-- name: Detect VM IP address via QEMU Guest Agent
+- name: "Homeassistant (Stage 1) - Detect VM IP address"
   ansible.builtin.shell: >-
     qm guest cmd {{ hostvars[item]['service_id'] }} network-get-interfaces
     | jq -r '[.[] | select(.name != "lo") | ."ip-addresses"[]?
@@ -24,19 +24,19 @@
   changed_when: false
   loop: "{{ groups['homeassistant'] }}"
 
-- name: Store detected IP addresses for initial API access
+- name: "Homeassistant (Stage 1) - Store detected IPs"
   ansible.builtin.set_fact:
     ha_initial_ips: "{{ ha_initial_ips | default({}) | combine({item.item: item.stdout | trim}) }}"
   loop: "{{ detected_ips.results }}"
   when: item.stdout | trim | length > 0
 
-- name: Show detected HA VM IPs
+- name: "Homeassistant (Stage 1) - Show detected VM IPs"
   ansible.builtin.debug:
     msg: "{{ item }} – Current IP: {{ ha_initial_ips[item] }} | Target static IP: {{ hostvars[item]['ansible_host'] }}"
   loop: "{{ groups['homeassistant'] }}"
   when: item in (ha_initial_ips | default({}))
 
-- name: Wait for HA Core to be installed (not just landing page)
+- name: "Homeassistant (Stage 1) - Wait for HA Core installation"
   ansible.builtin.command: >
     qm guest exec {{ hostvars[item]['service_id'] }} --
     ha core info
@@ -50,7 +50,7 @@
   failed_when: false
   loop: "{{ groups['homeassistant'] }}"
 
-- name: Wait for Home Assistant API to become available
+- name: "Homeassistant (Stage 1) - Wait for HA API"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/"
     method: GET
@@ -62,7 +62,7 @@
   until: ha_api_check.status in [200, 401]
   loop: "{{ groups['homeassistant'] }}"
 
-- name: Add HA VM DNS entry to /etc/hosts
+- name: "Homeassistant (Stage 1) - Add DNS entry to /etc/hosts"
   ansible.builtin.lineinfile:
     path: /etc/hosts
     regexp: "\\s+{{ item }}$"

@@ -14,7 +14,7 @@
 # Requires: ha_tokens dict (set in Stage 1 onboarding)
 # ==============================================================================
 
-- name: Read current HA core configuration
+- name: "Homeassistant (Stage 3) - Read current core config"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
     method: GET
@@ -26,7 +26,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Check if core config update is needed
+- name: "Homeassistant (Stage 3) - Check if core update needed"
   ansible.builtin.set_fact:
     ha_core_update_needed: >-
       {{ _cfg.time_zone  != ha_timezone
@@ -37,11 +37,11 @@
   vars:
     _cfg: "{{ ha_current_config.results | selectattr('json', 'defined') | map(attribute='json') | list | first | default({}) }}"
 
-- name: Show core config status
+- name: "Homeassistant (Stage 3) - Show core config status"
   ansible.builtin.debug:
     msg: "Core configuration {{ 'needs update' if ha_core_update_needed | bool else 'already up-to-date' }}"
 
-- name: Update core configuration via WebSocket API
+- name: "Homeassistant (Stage 3) - Update core configuration"
   ansible.builtin.shell: >-
     python3 /usr/local/bin/ha_supervisor_api.py
     "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}"
@@ -65,7 +65,7 @@
   register: core_update_result
   changed_when: core_update_result.rc == 0
 
-- name: Verify core configuration was applied
+- name: "Homeassistant (Stage 3) - Verify core configuration"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
     method: GET
@@ -79,7 +79,7 @@
     - item in ha_tokens
     - ha_core_update_needed | bool
 
-- name: Show updated core configuration
+- name: "Homeassistant (Stage 3) - Show updated core config"
   ansible.builtin.debug:
     msg: >-
       Core config: timezone={{ item.json.time_zone }},

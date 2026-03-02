@@ -19,7 +19,7 @@
 # ------------------------------------------------------------------
 # Resolve latest stable HAOS version from GitHub (unless pinned)
 # ------------------------------------------------------------------
-- name: Resolve latest stable HAOS release from GitHub
+- name: "Homeassistant (Stage 1) - Resolve latest stable HAOS release"
   ansible.builtin.uri:
     url: https://api.github.com/repos/home-assistant/operating-system/releases
     method: GET
@@ -31,7 +31,7 @@
   register: haos_releases
   when: ha_os_version is not defined
 
-- name: Set ha_os_version to latest stable release
+- name: "Homeassistant (Stage 1) - Set HAOS version fact"
   ansible.builtin.set_fact:
     ha_os_version: >-
       {{ haos_releases.json
@@ -41,36 +41,36 @@
          | first }}
   when: ha_os_version is not defined
 
-- name: Set HAOS image download URL
+- name: "Homeassistant (Stage 1) - Set HAOS image download URL"
   ansible.builtin.set_fact:
     ha_image_url: "https://github.com/home-assistant/operating-system/releases/download/{{ ha_os_version }}/haos_ova-{{ ha_os_version }}.qcow2.xz"
 
-- name: Show resolved HAOS version
+- name: "Homeassistant (Stage 1) - Show resolved HAOS version"
   ansible.builtin.debug:
     msg: "Using HAOS version {{ ha_os_version }} – {{ ha_image_url }}"
 
 # ------------------------------------------------------------------
 # Download HAOS image (only if missing)
 # ------------------------------------------------------------------
-- name: Ensure download directory exists
+- name: "Homeassistant (Stage 1) - Ensure download directory exists"
   ansible.builtin.file:
     path: "{{ ha_image_download_dir }}"
     state: directory
     mode: '0755'
 
-- name: Check if HAOS image already exists
+- name: "Homeassistant (Stage 1) - Check if HAOS image exists"
   ansible.builtin.stat:
     path: "{{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2"
   register: haos_image
 
-- name: Download HAOS qcow2 image (compressed)
+- name: "Homeassistant (Stage 1) - Download HAOS image"
   ansible.builtin.get_url:
     url: "{{ ha_image_url }}"
     dest: "{{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2.xz"
     mode: '0644'
   when: not haos_image.stat.exists
 
-- name: Decompress HAOS image
+- name: "Homeassistant (Stage 1) - Decompress HAOS image"
   ansible.builtin.command:
     cmd: "xz -d -k {{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2.xz"
     creates: "{{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2"
@@ -79,7 +79,7 @@
 # ------------------------------------------------------------------
 # VM creation via Proxmox API (idempotent – skips existing VMs)
 # ------------------------------------------------------------------
-- name: Create HAOS VM via Proxmox API
+- name: "Homeassistant (Stage 1) - Create HAOS VM"
   community.proxmox.proxmox_kvm:
     vmid: "{{ hostvars[item]['service_id'] }}"
     name: "{{ item }}"
@@ -116,13 +116,13 @@
 # we fall back to the qm CLI for disk import. This is the only step
 # that cannot use the Proxmox API module.
 # ------------------------------------------------------------------
-- name: Check if scsi0 disk is already attached
+- name: "Homeassistant (Stage 1) - Check if scsi0 disk is attached"
   ansible.builtin.command: "qm config {{ hostvars[item]['service_id'] }}"
   register: vm_config
   changed_when: false
   loop: "{{ groups['homeassistant'] }}"
 
-- name: Import HAOS disk image into VM
+- name: "Homeassistant (Stage 1) - Import HAOS disk image"
   ansible.builtin.command: >-
     qm importdisk {{ hostvars[item.item]['service_id'] }}
     {{ ha_image_download_dir }}/haos_ova-{{ ha_os_version }}.qcow2 {{ default_storage }}
@@ -131,7 +131,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Attach imported disk as scsi0
+- name: "Homeassistant (Stage 1) - Attach imported disk as scsi0"
   ansible.builtin.command: >-
     qm set {{ hostvars[item.item]['service_id'] }}
     --scsi0 {{ default_storage }}:vm-{{ hostvars[item.item]['service_id'] }}-disk-1
@@ -141,7 +141,7 @@
     label: "{{ item.item }}"
 
 # Resize via Proxmox API module (works with token auth on existing disks)
-- name: Resize HAOS disk to desired size
+- name: "Homeassistant (Stage 1) - Resize HAOS disk"
   community.proxmox.proxmox_disk:
     vmid: "{{ hostvars[item]['service_id'] }}"
     disk: scsi0
@@ -152,7 +152,7 @@
 # ------------------------------------------------------------------
 # Start VM via Proxmox API (idempotent – skips if already running)
 # ------------------------------------------------------------------
-- name: Start Home Assistant VM
+- name: "Homeassistant (Stage 1) - Start VM"
   community.proxmox.proxmox_kvm:
     vmid: "{{ hostvars[item]['service_id'] }}"
     node: "{{ proxmox_node }}"

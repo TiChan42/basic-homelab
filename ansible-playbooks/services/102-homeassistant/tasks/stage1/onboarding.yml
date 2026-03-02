@@ -17,7 +17,7 @@
 # If it is STILL 401 after retries, failed_when:false keeps the
 # play running and we treat it as "already onboarded".
 # ------------------------------------------------------------------
-- name: Check if HA is already onboarded
+- name: "Homeassistant (Stage 1) - Check onboarding state"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/onboarding"
     method: GET
@@ -33,7 +33,7 @@
 # ------------------------------------------------------------------
 # Path A: First run – onboarding creates admin user & returns auth_code
 # ------------------------------------------------------------------
-- name: Complete HA onboarding – create admin user
+- name: "Homeassistant (Stage 1) - Create admin user (onboarding)"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/api/onboarding/users"
     method: POST
@@ -54,7 +54,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Store onboarding auth codes
+- name: "Homeassistant (Stage 1) - Store onboarding auth codes"
   ansible.builtin.set_fact:
     ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({_host: item.json.auth_code}) }}"
   vars:
@@ -65,7 +65,7 @@
     - item.skipped is not defined or not item.skipped
     - item.status is defined and item.status == 200
 
-- name: Record hosts that were freshly onboarded
+- name: "Homeassistant (Stage 1) - Record fresh hosts"
   ansible.builtin.set_fact:
     ha_fresh_hosts: "{{ onboarding_status.results | selectattr('status', 'equalto', 200) | map(attribute='item') | list }}"
 
@@ -73,7 +73,7 @@
 # Path B: Re-run – obtain auth_code via login flow
 # (only when HA is already onboarded / no auth_code from onboarding)
 # ------------------------------------------------------------------
-- name: Initiate login flow
+- name: "Homeassistant (Stage 1) - Initiate login flow"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/auth/login_flow"
     method: POST
@@ -94,7 +94,7 @@
     - item not in (ha_fresh_hosts | default([]))
   loop: "{{ groups['homeassistant'] }}"
 
-- name: Submit credentials to login flow
+- name: "Homeassistant (Stage 1) - Submit login credentials"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.json.flow_id }}"
     method: POST
@@ -116,7 +116,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Store login flow auth codes
+- name: "Homeassistant (Stage 1) - Store login auth codes"
   ansible.builtin.set_fact:
     ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({_host: item.json.result}) }}"
   vars:
@@ -130,7 +130,7 @@
 # ------------------------------------------------------------------
 # Exchange auth_code for access + refresh tokens
 # ------------------------------------------------------------------
-- name: Exchange auth code for tokens
+- name: "Homeassistant (Stage 1) - Exchange auth code for tokens"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/auth/token"
     method: POST
@@ -146,7 +146,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in (ha_auth_codes | default({}))
 
-- name: Set access token fact for each host
+- name: "Homeassistant (Stage 1) - Set access token facts"
   ansible.builtin.set_fact:
     ha_tokens: "{{ ha_tokens | default({}) | combine({ item.item: item.json.access_token }) }}"
   loop: "{{ auth_response.results }}"
@@ -158,7 +158,7 @@
 # ------------------------------------------------------------------
 # Complete remaining onboarding steps (idempotent – skips if done)
 # ------------------------------------------------------------------
-- name: Check remaining onboarding steps
+- name: "Homeassistant (Stage 1) - Check remaining onboarding steps"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/onboarding"
     method: GET
@@ -169,7 +169,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Complete core_config onboarding step
+- name: "Homeassistant (Stage 1) - Complete core_config step"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/api/onboarding/core_config"
     method: POST
@@ -188,7 +188,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Complete analytics onboarding step
+- name: "Homeassistant (Stage 1) - Complete analytics step"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/api/onboarding/analytics"
     method: POST
@@ -207,7 +207,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Complete integration onboarding step
+- name: "Homeassistant (Stage 1) - Complete integration step"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/api/onboarding/integration"
     method: POST

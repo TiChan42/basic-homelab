@@ -15,7 +15,7 @@
 # ------------------------------------------------------------------
 # Check if MQTT integration is already configured
 # ------------------------------------------------------------------
-- name: Check existing MQTT config entries
+- name: "Homeassistant (Stage 3) - Check MQTT config entries"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/entry"
     method: GET
@@ -28,7 +28,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Determine if MQTT is already configured
+- name: "Homeassistant (Stage 3) - Determine MQTT state"
   ansible.builtin.set_fact:
     ha_mqtt_configured: >-
       {{ mqtt_config_entries.results
@@ -41,7 +41,7 @@
          | list
          | length > 0 }}
 
-- name: Skip MQTT configuration (already set up)
+- name: "Homeassistant (Stage 3) - Skip MQTT (already configured)"
   ansible.builtin.debug:
     msg: "MQTT integration is already configured – skipping."
   when: ha_mqtt_configured | bool
@@ -49,7 +49,7 @@
 # ------------------------------------------------------------------
 # Configure MQTT integration (only if not yet configured)
 # ------------------------------------------------------------------
-- name: Start MQTT config flow
+- name: "Homeassistant (Stage 3) - Start MQTT config flow"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/flow"
     method: POST
@@ -68,7 +68,7 @@
     - item in ha_tokens
     - not (ha_mqtt_configured | bool)
 
-- name: Select 'broker' option in MQTT config flow menu
+- name: "Homeassistant (Stage 3) - Select broker option"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/flow/{{ item.json.flow_id }}"
     method: POST
@@ -90,7 +90,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Submit MQTT broker configuration
+- name: "Homeassistant (Stage 3) - Submit MQTT broker config"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item.item.item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/flow/{{ item.json.flow_id }}"
     method: POST
@@ -117,7 +117,7 @@
 # ------------------------------------------------------------------
 # Handle case where flow goes directly to form (no menu step)
 # ------------------------------------------------------------------
-- name: Submit MQTT broker configuration (direct flow – no menu)
+- name: "Homeassistant (Stage 3) - Submit MQTT broker config (direct)"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/flow/{{ item.json.flow_id }}"
     method: POST
@@ -142,12 +142,12 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Flag reboot needed (MQTT configured)
+- name: "Homeassistant (Stage 3) - Flag reboot needed (MQTT)"
   ansible.builtin.set_fact:
     ha_reboot_needed: true
   when: not (ha_mqtt_configured | bool)
 
-- name: Show MQTT configuration result
+- name: "Homeassistant (Stage 3) - Show MQTT result"
   ansible.builtin.debug:
     msg: >-
       MQTT integration {{ 'was already configured' if (ha_mqtt_configured | bool)

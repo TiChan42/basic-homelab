@@ -13,7 +13,7 @@
 # ------------------------------------------------------------------
 # Variables
 # ------------------------------------------------------------------
-- name: Set addon slugs and repository
+- name: "Homeassistant (Stage 3) - Set addon slugs"
   ansible.builtin.set_fact:
     z2m_repository: "https://github.com/zigbee2mqtt/hassio-zigbee2mqtt"
     z2m_slug: "45df7312_zigbee2mqtt"
@@ -24,7 +24,7 @@
 # ╚════════════════════════════════════════════════════════════╝
 
 # --- Add community repository for Z2M ---
-- name: Get current addon repositories
+- name: "Homeassistant (Stage 3) - Get addon repositories"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -36,7 +36,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Check if Z2M repository is already added
+- name: "Homeassistant (Stage 3) - Check Z2M repo present"
   ansible.builtin.set_fact:
     z2m_repo_present: >-
       {{ store_info.results
@@ -50,7 +50,7 @@
          | list
          | length > 0 }}
 
-- name: Add Zigbee2MQTT addon repository
+- name: "Homeassistant (Stage 3) - Add Z2M addon repository"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -65,13 +65,13 @@
     - item in ha_tokens
     - not (z2m_repo_present | bool)
 
-- name: Wait for addon store to refresh after adding repository
+- name: "Homeassistant (Stage 3) - Wait for addon store refresh"
   ansible.builtin.pause:
     seconds: 10
   when: not (z2m_repo_present | bool)
 
 # --- Install Zigbee2MQTT addon ---
-- name: Check if Zigbee2MQTT addon is installed
+- name: "Homeassistant (Stage 3) - Check Z2M addon installed"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -84,7 +84,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Determine Z2M addon state
+- name: "Homeassistant (Stage 3) - Determine Z2M state"
   ansible.builtin.set_fact:
     z2m_installed: >-
       {{ z2m_info.results
@@ -106,11 +106,11 @@
          | selectattr('state', 'equalto', 'started')
          | list | length > 0 }}
 
-- name: Show Z2M addon state
+- name: "Homeassistant (Stage 3) - Show Z2M state"
   ansible.builtin.debug:
     msg: "Z2M – installed: {{ z2m_installed }}, running: {{ z2m_running }}"
 
-- name: Install Zigbee2MQTT addon
+- name: "Homeassistant (Stage 3) - Install Z2M addon"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -132,7 +132,7 @@
     - item in ha_tokens
     - not (z2m_installed | bool)
 
-- name: Verify Z2M addon installation
+- name: "Homeassistant (Stage 3) - Verify Z2M installation"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -154,7 +154,7 @@
     - not (z2m_installed | bool)
 
 # --- Configure Zigbee2MQTT addon ---
-- name: Configure Zigbee2MQTT addon options
+- name: "Homeassistant (Stage 3) - Configure Z2M addon"
   ansible.builtin.command:
     argv:
       - python3
@@ -187,7 +187,7 @@
   when: item in ha_tokens
 
 # --- Start Zigbee2MQTT addon ---
-- name: Start Zigbee2MQTT addon
+- name: "Homeassistant (Stage 3) - Start Z2M addon"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -203,7 +203,7 @@
     - item in ha_tokens
     - not (z2m_running | bool)
 
-- name: Wait for Zigbee2MQTT addon to reach 'started' state
+- name: "Homeassistant (Stage 3) - Wait for Z2M started"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -222,7 +222,7 @@
     - item in ha_tokens
     - not (z2m_running | bool)
 
-- name: Enable Zigbee2MQTT auto-start, watchdog and sidebar panel
+- name: "Homeassistant (Stage 3) - Enable Z2M auto-start & watchdog"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -241,7 +241,7 @@
 # Uses QEMU Guest Agent to patch the file directly on HAOS filesystem.
 # ----------------------------------------------------------------------------------
 
-- name: Wait for Z2M configuration.yaml to exist
+- name: "Homeassistant (Stage 3) - Wait for Z2M config file"
   ansible.builtin.shell: >-
     qm guest exec {{ hostvars[item]['service_id'] }} --
     test -f /mnt/data/supervisor/homeassistant/zigbee2mqtt/configuration.yaml
@@ -255,7 +255,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Fix Z2M configuration (onboarding + MQTT password quoting + log level)
+- name: "Homeassistant (Stage 3) - Fix Z2M config"
   ansible.builtin.shell: |
     python3 << 'PYEOF'
     import json, subprocess, re, sys
@@ -310,7 +310,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Restart Z2M addon after configuration fix
+- name: "Homeassistant (Stage 3) - Restart Z2M after config fix"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -323,7 +323,7 @@
     - item in ha_tokens
     - z2m_config_fix is changed
 
-- name: Wait for Z2M to connect to MQTT after restart
+- name: "Homeassistant (Stage 3) - Wait for Z2M MQTT reconnect"
   ansible.builtin.pause:
     seconds: 15
   when: z2m_config_fix is changed
@@ -332,12 +332,12 @@
 # ║  Matter Server                                            ║
 # ╚════════════════════════════════════════════════════════════╝
 
-- name: Wait for Supervisor to settle after Z2M operations
+- name: "Homeassistant (Stage 3) - Wait for Supervisor to settle"
   ansible.builtin.pause:
     seconds: 15
   when: not (z2m_installed | bool)
 
-- name: Check if Matter Server addon is installed
+- name: "Homeassistant (Stage 3) - Check Matter addon installed"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -350,7 +350,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Determine Matter addon state
+- name: "Homeassistant (Stage 3) - Determine Matter state"
   ansible.builtin.set_fact:
     matter_installed: >-
       {{ matter_info.results
@@ -372,11 +372,11 @@
          | selectattr('state', 'equalto', 'started')
          | list | length > 0 }}
 
-- name: Show Matter addon state
+- name: "Homeassistant (Stage 3) - Show Matter state"
   ansible.builtin.debug:
     msg: "Matter – installed: {{ matter_installed }}, running: {{ matter_running }}"
 
-- name: Install Matter Server addon
+- name: "Homeassistant (Stage 3) - Install Matter addon"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -398,7 +398,7 @@
     - item in ha_tokens
     - not (matter_installed | bool)
 
-- name: Verify Matter Server addon installation
+- name: "Homeassistant (Stage 3) - Verify Matter installation"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -420,7 +420,7 @@
     - not (matter_installed | bool)
 
 # --- Start Matter Server addon ---
-- name: Start Matter Server addon
+- name: "Homeassistant (Stage 3) - Start Matter addon"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -436,7 +436,7 @@
     - item in ha_tokens
     - not (matter_running | bool)
 
-- name: Wait for Matter Server addon to reach 'started' state
+- name: "Homeassistant (Stage 3) - Wait for Matter started"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -455,7 +455,7 @@
     - item in ha_tokens
     - not (matter_running | bool)
 
-- name: Enable Matter Server auto-start, watchdog and sidebar panel
+- name: "Homeassistant (Stage 3) - Enable Matter auto-start & watchdog"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -471,11 +471,11 @@
 # ║  Verify Addons                                            ║
 # ╚════════════════════════════════════════════════════════════╝
 
-- name: Wait for addons to start
+- name: "Homeassistant (Stage 3) - Wait for addons to start"
   ansible.builtin.pause:
     seconds: 15
 
-- name: Verify Zigbee2MQTT addon is running
+- name: "Homeassistant (Stage 3) - Verify Z2M running"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -487,7 +487,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Verify Matter Server addon is running
+- name: "Homeassistant (Stage 3) - Verify Matter running"
   ansible.builtin.command:
     cmd: >-
       python3 /usr/local/bin/ha_supervisor_api.py
@@ -499,7 +499,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Show addon status
+- name: "Homeassistant (Stage 3) - Show addon status"
   ansible.builtin.debug:
     msg: >-
       Addons – Z2M: {{ (z2m_verify.results[0].stdout | from_json).state | default('unknown') }},
@@ -515,7 +515,7 @@
 #      We ACCEPT this flow to create the Matter integration.
 # These run idempotently – skip if already handled.
 
-- name: Get current discovery flows and config entries
+- name: "Homeassistant (Stage 3) - Get discovery state"
   ansible.builtin.shell: |
     python3 << 'PYEOF'
     import json, sys
@@ -554,11 +554,11 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Parse discovery state
+- name: "Homeassistant (Stage 3) - Parse discovery state"
   ansible.builtin.set_fact:
     _disc: "{{ (discovery_state.results | first).stdout | from_json }}"
 
-- name: Show discovery state
+- name: "Homeassistant (Stage 3) - Show discovery state"
   ansible.builtin.debug:
     msg: >-
       Discovery – ZHA ignored: {{ _disc.zha_ignored }},
@@ -566,7 +566,7 @@
       Pending flows: {{ _disc.flows | length }}
 
 # --- Ignore ZHA USB discovery (SONOFF dongle is managed by Z2M) ---
-- name: Ignore ZHA discovery for USB dongle
+- name: "Homeassistant (Stage 3) - Ignore ZHA discovery"
   ansible.builtin.shell: |
     python3 << 'PYEOF'
     import json, sys
@@ -612,7 +612,7 @@
     - not (_disc.zha_ignored | bool)
 
 # --- Accept Matter Server discovery (create integration entry) ---
-- name: Accept Matter Server discovery
+- name: "Homeassistant (Stage 3) - Accept Matter discovery"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config/config_entries/flow/{{ _matter_flow_id }}"
     method: POST
@@ -633,7 +633,7 @@
     - not (_disc.matter_configured | bool)
     - _disc.flows | selectattr('handler', 'equalto', 'matter') | list | length > 0
 
-- name: Show Matter integration result
+- name: "Homeassistant (Stage 3) - Show Matter integration result"
   ansible.builtin.debug:
     msg: >-
       Matter integration: {{ 'already configured' if (_disc.matter_configured | bool)

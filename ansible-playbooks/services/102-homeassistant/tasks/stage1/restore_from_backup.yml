@@ -20,14 +20,14 @@
 # Idempotent: Skips restore when HA already has >50 entities.
 # ==============================================================================
 
-- name: Initialize restore tracking
+- name: "Homeassistant (Stage 1) - Initialize restore tracking"
   set_fact:
     ha_restored_from_backup: false
 
 # ------------------------------------------------------------------
 # Ensure ha_initial_ips maps to current (static) IP
 # ------------------------------------------------------------------
-- name: Update ha_initial_ips to static IPs
+- name: "Homeassistant (Stage 1) - Update IPs to static"
   ansible.builtin.set_fact:
     ha_initial_ips: "{{ ha_initial_ips | default({}) | combine({item: hostvars[item]['ansible_host']}) }}"
   loop: "{{ groups['homeassistant'] }}"
@@ -35,7 +35,7 @@
 # ------------------------------------------------------------------
 # Pre-flight: should we attempt a restore?
 # ------------------------------------------------------------------
-- name: Check current HA entity count (overwrite protection)
+- name: "Homeassistant (Stage 1) - Check entity count"
   uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/states"
     method: GET
@@ -47,7 +47,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Evaluate if restore is needed
+- name: "Homeassistant (Stage 1) - Evaluate restore need"
   set_fact:
     ha_restore_needed: >-
       {{ ha_states_check.results
@@ -56,7 +56,7 @@
          | map('length')
          | list | first | default(0) | int <= 50 }}
 
-- name: Show restore decision
+- name: "Homeassistant (Stage 1) - Show restore decision"
   debug:
     msg: >-
       {{ 'HA has few entities (' +
@@ -69,7 +69,7 @@
 # ------------------------------------------------------------------
 # Check NAS for backup files (from Proxmox host filesystem)
 # ------------------------------------------------------------------
-- name: Check for backup files on NAS
+- name: "Homeassistant (Stage 1) - Find NAS backups"
   ansible.builtin.find:
     paths: "{{ nas_backup_mount }}/homeassistant/homeassistant"
     patterns: "*.tar"
@@ -77,7 +77,7 @@
   register: nas_backup_files
   when: ha_restore_needed | bool
 
-- name: Evaluate NAS backup availability
+- name: "Homeassistant (Stage 1) - Evaluate NAS backup availability"
   set_fact:
     ha_nas_has_backups: "{{ (nas_backup_files.files | default([]) | length) > 0 }}"
     ha_nas_newest_backup: >-
@@ -86,7 +86,7 @@
           | first).path | default('') }}
   when: ha_restore_needed | bool
 
-- name: Show NAS backup status
+- name: "Homeassistant (Stage 1) - Show NAS backup status"
   debug:
     msg: >-
       {{ 'Found ' + (nas_backup_files.files | default([]) | length | string) +
@@ -98,7 +98,7 @@
 # ------------------------------------------------------------------
 # Upload backup from Proxmox host NAS mount to HAOS
 # ------------------------------------------------------------------
-- name: Upload backup to HAOS from NAS
+- name: "Homeassistant (Stage 1) - Upload backup to HAOS"
   ansible.builtin.shell: |
     RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
       "http://{{ ha_initial_ips[groups['homeassistant'][0]] }}:{{ ha_port | default('8123') }}/api/hassio/backups/new/upload" \
@@ -120,14 +120,14 @@
     - ha_restore_needed | bool
     - ha_nas_has_backups | default(false) | bool
 
-- name: Parse upload response
+- name: "Homeassistant (Stage 1) - Parse upload response"
   set_fact:
     ha_restore_slug: "{{ (ha_backup_upload.stdout | from_json).data.slug | default('') }}"
   when:
     - ha_backup_upload is defined
     - ha_backup_upload.skipped is not defined or not ha_backup_upload.skipped
 
-- name: Fail if backup upload failed
+- name: "Homeassistant (Stage 1) - Fail if upload failed"
   fail:
     msg: "Failed to upload backup to HAOS. Output: {{ ha_backup_upload.stdout | default('') }}"
   when:
@@ -135,7 +135,7 @@
     - ha_nas_has_backups | default(false) | bool
     - ha_restore_slug | default('') | length == 0
 
-- name: Show restore plan
+- name: "Homeassistant (Stage 1) - Show restore plan"
   debug:
     msg: >-
       Restoring backup (slug: {{ ha_restore_slug }},
@@ -147,7 +147,7 @@
 # ------------------------------------------------------------------
 # Trigger restore via Supervisor API
 # ------------------------------------------------------------------
-- name: Trigger full restore via Supervisor API
+- name: "Homeassistant (Stage 1) - Trigger full restore"
   ansible.builtin.shell: >-
     python3 /usr/local/bin/ha_supervisor_api.py
     "http://{{ ha_initial_ips[groups['homeassistant'][0]] }}:{{ ha_port | default('8123') }}"
@@ -164,7 +164,7 @@
     - ha_restore_needed | bool
     - ha_restore_slug | default('') | length > 0
 
-- name: Show restore trigger result
+- name: "Homeassistant (Stage 1) - Show restore trigger result"
   debug:
     msg: "Restore triggered. HA will restart now."
   when:
@@ -174,7 +174,7 @@
 # ------------------------------------------------------------------
 # Wait for HA to come back after restore
 # ------------------------------------------------------------------
-- name: Wait for HA to restart after restore
+- name: "Homeassistant (Stage 1) - Wait for HA restart after restore"
   uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/"
     method: GET
@@ -192,14 +192,14 @@
 # ------------------------------------------------------------------
 # Re-authenticate after restore (auth DB was replaced)
 # ------------------------------------------------------------------
-- name: Wait additional time for HA to fully initialize after restore
+- name: "Homeassistant (Stage 1) - Wait for HA init after restore"
   pause:
     seconds: 30
   when:
     - ha_restore_result is defined
     - ha_restore_result.skipped is not defined or not ha_restore_result.skipped
 
-- name: Re-authenticate via login flow after restore
+- name: "Homeassistant (Stage 1) - Re-auth: login flow after restore"
   uri:
     url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/auth/login_flow"
     method: POST
@@ -220,7 +220,7 @@
     - ha_restore_result is defined
     - ha_restore_result.skipped is not defined or not ha_restore_result.skipped
 
-- name: Submit credentials to post-restore login flow
+- name: "Homeassistant (Stage 1) - Re-auth: submit credentials"
   uri:
     url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.json.flow_id }}"
     method: POST
@@ -242,7 +242,7 @@
     - item.skipped is not defined or not item.skipped
     - item.status is defined and item.status == 200
 
-- name: Exchange post-restore auth code for tokens
+- name: "Homeassistant (Stage 1) - Re-auth: exchange tokens"
   uri:
     url: "http://{{ ha_initial_ips[item.item.item] }}:{{ ha_port | default('8123') }}/auth/token"
     method: POST
@@ -262,7 +262,7 @@
     - item.skipped is not defined or not item.skipped
     - item.status is defined and item.status == 200
 
-- name: Update ha_tokens with post-restore tokens
+- name: "Homeassistant (Stage 1) - Update tokens after restore"
   set_fact:
     ha_tokens: "{{ ha_tokens | combine({ item.item.item.item: item.json.access_token }) }}"
   loop: "{{ restore_auth_response.results }}"
@@ -274,14 +274,14 @@
 # ------------------------------------------------------------------
 # Mark restore as completed
 # ------------------------------------------------------------------
-- name: Set restore flag
+- name: "Homeassistant (Stage 1) - Set restore flag"
   set_fact:
     ha_restored_from_backup: true
   when:
     - ha_restore_result is defined
     - ha_restore_result.skipped is not defined or not ha_restore_result.skipped
 
-- name: Show final restore status
+- name: "Homeassistant (Stage 1) - Show restore status"
   debug:
     msg: >-
       {{ 'HA successfully restored from NAS backup (uploaded via Proxmox host). Subsequent fresh-install tasks will be skipped.'

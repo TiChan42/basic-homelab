@@ -5,7 +5,7 @@
 # Configures HA's native backup system with automatic scheduling and
 # retention policies.  Backups are created locally inside HAOS and then
 # copied to the NAS via the Proxmox host's NFS share
-# ({{ nas_backup_mount }}).  Stage 5 (create_backup) handles the copy.
+# ({{ nas_backup_mount }}).  Stage 4 (create_backup) handles the copy.
 #
 # The NAS NFS export only allows the Proxmox host IP, so HAOS cannot
 # mount it directly.
@@ -20,31 +20,9 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------
-# Cleanup: Remove unused backup scripts and cron
-# ------------------------------------------------------------------
-- name: Remove unused backup cron job (if exists)
-  ansible.builtin.cron:
-    name: "HA daily backup to NAS"
-    user: root
-    state: absent
-
-- name: Remove unused backup scripts (if exist)
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /usr/local/bin/ha_backup.sh
-    - /usr/local/bin/ha_restore.sh
-
-- name: Remove unused refresh token file (if exists)
-  ansible.builtin.file:
-    path: /etc/ha_backup_refresh_token
-    state: absent
-
-# ------------------------------------------------------------------
 # Ensure NAS backup directory exists (from Proxmox host)
 # ------------------------------------------------------------------
-- name: Ensure NAS backup directory for HA exists
+- name: "Homeassistant (Stage 2) - Ensure NAS backup directory exists"
   ansible.builtin.file:
     path: "{{ nas_backup_mount }}/homeassistant/homeassistant"
     state: directory
@@ -53,9 +31,29 @@
     group: root
 
 # ------------------------------------------------------------------
+# Check if backup config already matches desired state
+# ------------------------------------------------------------------
+- name: "Homeassistant (Stage 2) - Read current backup config"
+  ansible.builtin.shell: >-
+    python3 /usr/local/bin/ha_supervisor_api.py
+    "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
+    "{{ ha_tokens[groups['homeassistant'][0]] }}"
+    ws backup/config/info
+  register: backup_config_current
+  changed_when: false
+  failed_when: false
+
+- name: "Homeassistant (Stage 2) - Determine if backup update needed"
+  ansible.builtin.set_fact:
+    ha_backup_update_needed: >-
+      {{ backup_config_current.rc | default(1) != 0
+         or (backup_config_current.stdout | default('{}') | from_json).get('config', {}).get('schedule', {}).get('recurrence', '') != 'daily'
+         or (backup_config_current.stdout | default('{}') | from_json).get('config', {}).get('retention', {}).get('copies', 0) | int != ha_backup_keep_count | int }}
+
+# ------------------------------------------------------------------
 # Configure HA's native backup schedule and retention (local only)
 # ------------------------------------------------------------------
-- name: Configure native backup (schedule, retention, local agent)
+- name: "Homeassistant (Stage 2) - Configure native backup"
   ansible.builtin.shell: >-
     python3 /usr/local/bin/ha_supervisor_api.py
     "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
@@ -80,8 +78,9 @@
         recurrence: "daily"
         time: null
   register: backup_config_update
+  when: ha_backup_update_needed | bool
 
-- name: Verify backup configuration was applied
+- name: "Homeassistant (Stage 2) - Verify backup configuration"
   ansible.builtin.shell: >-
     python3 /usr/local/bin/ha_supervisor_api.py
     "http://{{ hostvars[groups['homeassistant'][0]]['ansible_host'] }}:{{ ha_port }}"
@@ -89,19 +88,22 @@
     ws backup/config/info
   register: backup_config_verify
   changed_when: false
+  when: ha_backup_update_needed | bool
 
-- name: Assert backup schedule is active
+- name: "Homeassistant (Stage 2) - Assert backup schedule active"
   ansible.builtin.assert:
     that:
-      - (backup_config_verify.stdout | from_json).config.schedule.recurrence == 'daily'
-      - (backup_config_verify.stdout | from_json).config.create_backup.agent_ids | length >= 1
+      - >-
+        (backup_config_verify.stdout | default(backup_config_current.stdout) | from_json).config.schedule.recurrence == 'daily'
+      - >-
+        (backup_config_verify.stdout | default(backup_config_current.stdout) | from_json).config.create_backup.agent_ids | length >= 1
     fail_msg: "Native backup configuration was not applied correctly."
     success_msg: >-
       Native backup configured: schedule=daily,
-      agents={{ (backup_config_verify.stdout | from_json).config.create_backup.agent_ids }},
-      retention={{ (backup_config_verify.stdout | from_json).config.retention.copies }} copies
+      agents={{ (backup_config_verify.stdout | default(backup_config_current.stdout) | from_json).config.create_backup.agent_ids }},
+      retention={{ (backup_config_verify.stdout | default(backup_config_current.stdout) | from_json).config.retention.copies }} copies
 
-- name: Show Stage 2 summary
+- name: "Homeassistant (Stage 2) - Show summary"
   ansible.builtin.debug:
     msg: >-
       Native backup infrastructure deployed:

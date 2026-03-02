@@ -14,20 +14,20 @@
 #   - ansible.builtin.debug
 # ==============================================================================
 
-- name: Determine if HA Core restart is needed
+- name: "Homeassistant (Stage 3) - Determine if restart needed"
   ansible.builtin.set_fact:
     ha_needs_restart: >-
       {{ (ha_reboot_needed | default(false) | bool) or
          (ha_proxy_config_needed | default(false) | bool) }}
 
-- name: Show restart decision
+- name: "Homeassistant (Stage 3) - Show restart decision"
   ansible.builtin.debug:
     msg: >-
       {{ 'HA Core restart needed – applying configuration changes.'
          if ha_needs_restart | bool
          else 'No restart needed – all configurations already applied.' }}
 
-- name: Restart HA Core via Supervisor API
+- name: "Homeassistant (Stage 3) - Restart HA Core"
   ansible.builtin.shell: >-
     python3 /usr/local/bin/ha_supervisor_api.py
     "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}"
@@ -43,7 +43,7 @@
   failed_when: false
   register: restart_result
 
-- name: Wait for HA to become available after restart
+- name: "Homeassistant (Stage 3) - Wait for HA after restart"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/"
     method: GET
@@ -61,7 +61,7 @@
 # ------------------------------------------------------------------
 # Re-authenticate after restart (tokens may have been invalidated)
 # ------------------------------------------------------------------
-- name: Re-authenticate after restart – initiate login flow
+- name: "Homeassistant (Stage 3) - Re-auth: initiate login flow"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/auth/login_flow"
     method: POST
@@ -82,7 +82,7 @@
     - item in ha_tokens
     - ha_needs_restart | bool
 
-- name: Re-authenticate after restart – submit credentials
+- name: "Homeassistant (Stage 3) - Re-auth: submit credentials"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item.item]['ansible_host'] }}:{{ ha_port }}/auth/login_flow/{{ item.json.flow_id }}"
     method: POST
@@ -104,7 +104,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Re-authenticate after restart – exchange auth code for tokens
+- name: "Homeassistant (Stage 3) - Re-auth: exchange tokens"
   ansible.builtin.uri:
     url: "http://{{ hostvars[_host]['ansible_host'] }}:{{ ha_port }}/auth/token"
     method: POST
@@ -126,7 +126,7 @@
   loop_control:
     label: "{{ item.item.item }}"
 
-- name: Update access tokens after restart
+- name: "Homeassistant (Stage 3) - Update tokens after restart"
   ansible.builtin.set_fact:
     ha_tokens: "{{ ha_tokens | combine({ _host: item.json.access_token }) }}"
   vars:
@@ -140,7 +140,7 @@
 # ------------------------------------------------------------------
 # Post-restart health check
 # ------------------------------------------------------------------
-- name: Verify HA API is healthy after restart
+- name: "Homeassistant (Stage 3) - Verify HA health"
   ansible.builtin.uri:
     url: "http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}/api/config"
     method: GET
@@ -157,7 +157,7 @@
   loop: "{{ groups['homeassistant'] }}"
   when: item in ha_tokens
 
-- name: Show post-restart health status
+- name: "Homeassistant (Stage 3) - Show health status"
   ansible.builtin.debug:
     msg: >-
       HA {{ item.json.version }} is {{ item.json.state }}
