@@ -8,6 +8,42 @@
 # ------------------------------------------------------------------
 # Konfigurationsdateien
 # ------------------------------------------------------------------
+- name: Check existing n8n instance config for encryption key
+  stat:
+    path: "{{ n8n_data_dir }}/.n8n/config"
+  register: n8n_instance_config_stat
+
+- name: Read existing n8n instance config
+  slurp:
+    src: "{{ n8n_data_dir }}/.n8n/config"
+  register: n8n_instance_config_raw
+  when: n8n_instance_config_stat.stat.exists
+
+- name: Extract encryption key from existing n8n config
+  set_fact:
+    n8n_existing_encryption_key: >-
+      {{
+        (
+          (n8n_instance_config_raw.content | b64decode)
+          | regex_findall('"encryptionKey"\s*:\s*"([^\"]+)"')
+          | first
+          | default('')
+        )
+        if n8n_instance_config_stat.stat.exists
+        else ''
+      }}
+
+- name: Determine effective n8n encryption key
+  set_fact:
+    n8n_effective_encryption_key: >-
+      {{
+        n8n_encryption_key
+        | default(
+            n8n_existing_encryption_key
+            | default(n8n_basic_auth_password | hash('sha256') | truncate(32, True, ''))
+          )
+      }}
+
 - name: Deploy n8n environment file
   template:
     src: templates/n8n.env.j2

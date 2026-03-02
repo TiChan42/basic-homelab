@@ -1,0 +1,3 @@
+---
+- name: Configure n8n (environment, service)
+  include_tasks: "../configure_n8n.yml"

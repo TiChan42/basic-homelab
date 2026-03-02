@@ -39,17 +39,74 @@
 - name: Install Node.js
   apt:
     name: nodejs
-    state: latest
+    state: present
     update_cache: yes
 
 # ------------------------------------------------------------------
-# n8n (global, neueste stabile Version)
+# n8n (global, neueste stabile Version - robust gegen ENOTEMPTY)
 # ------------------------------------------------------------------
-- name: Install/update n8n globally via npm
-  npm:
-    name: n8n
-    global: yes
-    state: latest
+- name: Resolve latest n8n version from npm registry
+  command: npm view n8n version
+  register: n8n_latest_version_cmd
+  changed_when: false
+
+- name: Set target n8n version fact
+  set_fact:
+    n8n_target_version: "{{ n8n_latest_version_cmd.stdout | trim }}"
+
+- name: Resolve npm global module root
+  command: npm root -g
+  register: npm_root_global
+  changed_when: false
+
+- name: Check n8n binary availability
+  command: n8n --version
+  register: n8n_binary_check
+  changed_when: false
+  failed_when: false
+
+- name: Set installed n8n version fact from binary
+  set_fact:
+    n8n_installed_version: >-
+      {{
+        (n8n_binary_check.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+') | default(''))
+        if (n8n_binary_check.rc | default(1)) == 0
+        else ''
+      }}
+
+- name: Determine whether n8n install/update is required
+  set_fact:
+    n8n_install_required: >-
+      {{
+        ((n8n_binary_check.rc | default(1)) != 0)
+        or (n8n_installed_version != n8n_target_version)
+      }}
+
+- name: Remove old n8n package before upgrade (avoids ENOTEMPTY rename issues)
+  file:
+    path: "{{ npm_root_global.stdout | trim }}/n8n"
+    state: absent
+  when: n8n_install_required | bool
+
+- name: Install pinned latest n8n globally
+  shell: |
+    set -euo pipefail
+    npm uninstall -g n8n >/dev/null 2>&1 || true
+    rm -rf "$(npm root -g)/n8n" "$(npm root -g)"/.n8n-*
+    npm cache clean --force >/dev/null 2>&1 || true
+    npm install -g "n8n@{{ n8n_target_version }}" --force
+  args:
+    executable: /bin/bash
+  register: n8n_install_result
+  retries: 2
+  delay: 5
+  until: n8n_install_result.rc == 0
+  when: n8n_install_required | bool
+
+- name: Verify installed n8n version
+  command: n8n --version
+  register: n8n_version_check
+  changed_when: false
 
 - name: Ensure n8n data directory exists
   file:

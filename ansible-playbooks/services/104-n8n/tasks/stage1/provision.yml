@@ -1,0 +1,3 @@
+---
+- name: Provision n8n container on Proxmox
+  include_tasks: "../provision_container.yml"

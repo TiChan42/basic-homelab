@@ -1,0 +1,53 @@
+---
+- name: Wait for n8n HTTP port
+  wait_for:
+    port: "{{ service_backend_port }}"
+    timeout: 45
+
+- name: Check Home Assistant API reachability (Bearer token model)
+  uri:
+    url: "{{ n8n_ha_url }}/api/"
+    method: GET
+    status_code: [200, 401]
+    timeout: 10
+  register: ha_api_probe
+  failed_when: false
+
+- name: Show Home Assistant API probe result
+  debug:
+    msg: "Home Assistant API reachable (HTTP {{ ha_api_probe.status | default('n/a') }})."
+
+- name: Check Node-RED Admin API reachability
+  uri:
+    url: "{{ (n8n_nodered_url | default('http://' ~ (hostvars['nodered']['ansible_host'] | default('192.168.1.103')) ~ ':' ~ (hostvars['nodered']['service_backend_port'] | default('1880')))) }}/flows"
+    method: GET
+    status_code: [200, 401]
+    timeout: 10
+  register: nodered_api_probe
+  failed_when: false
+
+- name: Show Node-RED Admin API probe result
+  debug:
+    msg: "Node-RED Admin API reachable (HTTP {{ nodered_api_probe.status | default('n/a') }})."
+
+- name: Check n8n Public API with API key (optional)
+  uri:
+    url: "http://127.0.0.1:{{ service_backend_port }}/api/v1/workflows"
+    method: GET
+    headers:
+      X-N8N-API-KEY: "{{ n8n_api_key }}"
+    status_code: [200, 401, 403]
+    timeout: 10
+  register: n8n_api_probe
+  when: (n8n_api_key | default('')) | length > 0
+  failed_when: false
+
+- name: Show n8n Public API probe result
+  debug:
+    msg: "n8n Public API check result: HTTP {{ n8n_api_probe.status | default('n/a') }} (API key configured)."
+  when: (n8n_api_key | default('')) | length > 0
+
+- name: Note about optional n8n API key
+  debug:
+    msg: "n8n API key is not configured. Set n8n_api_key in all.yml to enable authenticated API checks/import tasks."
+  when: (n8n_api_key | default('')) | length == 0

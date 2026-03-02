@@ -1,0 +1,9 @@
+---
+- name: Setup backup & restore infrastructure
+  include_tasks: "../setup_backup.yml"
+
+- name: Start & verify n8n service
+  include_tasks: "../verify_service.yml"
+
+- name: Validate API-based integrations (HA, Node-RED, n8n API)
+  include_tasks: "../stage3/validate_integrations.yml"

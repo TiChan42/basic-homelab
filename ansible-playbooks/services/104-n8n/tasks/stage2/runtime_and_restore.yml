@@ -1,0 +1,9 @@
+---
+- name: Configure static networking
+  include_tasks: "../configure_networking.yml"
+
+- name: Install n8n runtime
+  include_tasks: "../install_n8n.yml"
+
+- name: Restore backup from NAS (if needed)
+  include_tasks: "../restore_backup.yml"
