@@ -25,6 +25,7 @@
 #   - webserver_git_repo           (Git repository URL)
 #   - webserver_git_branch         (Git branch, default: main)
 #   - webserver_build_command      (build command, default: npm run build)
+#   - webserver_container_mac      (optional static MAC address)
 # ==============================================================================
 
 - name: Provision Proxmox Containers for Webservers
@@ -72,7 +73,7 @@
         swap: 1024
         disk: "{{ hostvars[item]['webserver_container_rootfs'] }}"
         netif:
-          net0: "name=eth0,bridge=vmbr0,ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
+          net0: "name=eth0,bridge=vmbr0,hwaddr={{ hostvars[item]['webserver_container_mac'] | default('BC:24:11:00:01:' ~ ('%02X' | format((hostvars[item]['service_id'] | int) % 256))) }},ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
         pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
         onboot: yes
         state: present

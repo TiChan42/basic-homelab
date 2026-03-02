@@ -5,6 +5,7 @@
 #   proxmox_api_host, proxmox_api_user, proxmox_api_token_id/secret
 #   proxmox_node, default_lxc_template, default_storage
 #   mqtt_container_cores, mqtt_container_memory, mqtt_container_rootfs
+#   mqtt_container_mac
 #   network_cidr, network_gateway
 # Per host (from inventory/hosts.yml):
 #   service_id, service_frontend_port, service_backend_port, service_websocket_port
@@ -45,7 +46,7 @@
     swap: 512
     disk: "{{ mqtt_container_rootfs }}"
     netif:
-      net0: "name=eth0,bridge=vmbr0,ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
+      net0: "name=eth0,bridge=vmbr0,hwaddr={{ mqtt_container_mac | default('BC:24:11:00:01:01') }},ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
     pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
     onboot: yes
     state: present

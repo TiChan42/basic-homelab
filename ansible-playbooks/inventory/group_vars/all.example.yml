@@ -78,6 +78,8 @@ check_mount_nfs_cron_minute: "*/1"
 # Required per host: service_id, service_name, ansible_host,
 #   service_frontend_port, service_backend_port,
 #   webserver_git_repo, webserver_git_branch, service_traefik: { ... }
+# Optional for deterministic L2 identity:
+#   webserver_container_mac: "BC:24:11:00:01:05" (set per host in hosts.yml)
 
 # ==============================================================================
 # Traefik Reverse Proxy – Service-specific settings
@@ -86,6 +88,7 @@ traefik_version: "v3.3.3"
 traefik_container_memory: "256"
 traefik_container_cores: "1"
 traefik_container_rootfs: "{{ default_storage }}:4"
+traefik_container_mac: "BC:24:11:00:01:00"
 traefik_dashboard_enabled: true
 traefik_dashboard_insecure: true           # Set false in production!
 traefik_log_level: "INFO"
@@ -112,6 +115,7 @@ traefik_acme_enabled: false                 # Enable for Let's Encrypt
 mqtt_container_memory: "256"
 mqtt_container_cores: "1"
 mqtt_container_rootfs: "{{ default_storage }}:4"
+mqtt_container_mac: "BC:24:11:00:01:01"
 mqtt_ws_enabled: false
 mqtt_auth_enabled: true
 mqtt_default_user: "mqttuser"                    # CHANGE THIS
@@ -181,6 +185,7 @@ ha_backup_keep_count: 3                       # Retention: number of backup copi
 nodered_container_memory: "512"
 nodered_container_cores: "2"
 nodered_container_rootfs: "{{ default_storage }}:4"
+nodered_container_mac: "BC:24:11:00:01:03"
 nodered_node_version: "22"
 nodered_data_dir: "/opt/nodered"
 nodered_timezone: "{{ ha_timezone | default('Europe/Berlin') }}"
@@ -216,6 +221,7 @@ nodered_backup_keep_count: 3                       # Number of rotated backups t
 n8n_container_memory: "1024"
 n8n_container_cores: "2"
 n8n_container_rootfs: "{{ default_storage }}:8"
+n8n_container_mac: "BC:24:11:00:01:04"
 n8n_node_version: "22"
 n8n_data_dir: "/opt/n8n"
 n8n_webhook_url: "http://{{ hostvars['n8n']['ansible_host'] | default('192.168.1.104') }}:{{ hostvars['n8n']['service_backend_port'] | default('5678') }}"
