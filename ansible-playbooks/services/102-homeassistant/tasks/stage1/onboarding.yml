@@ -6,6 +6,11 @@
 # Produces: ha_tokens dict with access tokens per host.
 # ==============================================================================
 
+- name: "Homeassistant (Stage 1) - Initialize auth tracking facts"
+  ansible.builtin.set_fact:
+    ha_auth_codes: "{{ ha_auth_codes | default({}) }}"
+    ha_tokens: "{{ ha_tokens | default({}) }}"
+
 # ------------------------------------------------------------------
 # Check onboarding state (retry until HA is fully ready)
 # ------------------------------------------------------------------
@@ -24,9 +29,9 @@
     status_code: [200, 401, 404]
     timeout: 10
   register: onboarding_status
-  retries: 12
+  retries: 36
   delay: 10
-  until: onboarding_status.status is defined and onboarding_status.status in [200, 404]
+  until: onboarding_status.status is defined and onboarding_status.status in [200, 401, 404]
   failed_when: false
   loop: "{{ groups['homeassistant'] }}"
 
@@ -208,6 +213,56 @@
     - item.json is defined
     - item.json.result is defined
 
+- name: "Homeassistant (Stage 1) - Re-check onboarding for auth fallback"
+  ansible.builtin.uri:
+    url: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/api/onboarding"
+    method: GET
+    status_code: [200, 401, 404]
+    timeout: 10
+  register: onboarding_fallback_status
+  retries: 12
+  delay: 10
+  until: onboarding_fallback_status.status is defined and onboarding_fallback_status.status in [200, 401, 404]
+  failed_when: false
+  loop: "{{ groups['homeassistant'] }}"
+  when: item not in (ha_auth_codes | default({}))
+
+- name: "Homeassistant (Stage 1) - Create admin user (onboarding fallback)"
+  ansible.builtin.uri:
+    url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/api/onboarding/users"
+    method: POST
+    body_format: json
+    body:
+      client_id: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/"
+      name: "{{ ha_admin_name }}"
+      username: "{{ ha_admin_user }}"
+      password: "{{ ha_admin_password }}"
+      language: "{{ ha_language }}"
+    status_code: [200]
+    timeout: 30
+  register: onboarding_fallback_result
+  failed_when: false
+  no_log: true
+  when:
+    - item.status is defined and item.status == 200
+    - item.item not in (ha_auth_codes | default({}))
+  loop: "{{ onboarding_fallback_status.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "Homeassistant (Stage 1) - Store fallback onboarding auth codes"
+  ansible.builtin.set_fact:
+    ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({_host: item.json.auth_code}) }}"
+  vars:
+    _host: "{{ item.item.item }}"
+  loop: "{{ onboarding_fallback_result.results | default([]) }}"
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+    - item.json is defined
+    - item.json.auth_code is defined
+
 # ------------------------------------------------------------------
 # Exchange auth_code for access + refresh tokens
 # ------------------------------------------------------------------
@@ -248,7 +303,7 @@
   register: remaining_onboarding
   failed_when: false
   loop: "{{ groups['homeassistant'] }}"
-  when: item in ha_tokens
+  when: item in (ha_tokens | default({}))
 
 - name: "Homeassistant (Stage 1) - Complete core_config step"
   ansible.builtin.uri:
