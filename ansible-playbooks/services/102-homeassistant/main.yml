@@ -15,6 +15,7 @@
 #
 #   3. HA Configuration                (tasks/stage3/)
 #      Core config, users, addons, MQTT, reverse proxy.
+#      Post-restore Zigbee device refresh (clears stale frame counters).
 #      Idempotent – skips anything already configured (incl. from restore).
 #
 #   4. Backup Creation                 (tasks/stage4/)
@@ -228,6 +229,9 @@
 
     - name: "Homeassistant (Stage 3) - Install addons"
       include_tasks: tasks/stage3/install_addons.yml
+
+    - name: "Homeassistant (Stage 3) - Refresh Zigbee devices (post-restore)"
+      include_tasks: tasks/stage3/refresh_zigbee_devices.yml
 
     - name: "Homeassistant (Stage 3) - Configure MQTT"
       include_tasks: tasks/stage3/configure_mqtt.yml

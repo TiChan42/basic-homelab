@@ -1,0 +1,195 @@
+---
+# ==============================================================================
+# Tasks: Refresh Zigbee devices after backup restore
+# ==============================================================================
+# After restoring a HA backup, the Zigbee coordinator's frame counters
+# (stored in coordinator_backup.json) may be stale relative to the physical
+# devices.  This causes zigbee-herdsman to reject queued commands with
+# "Request superseded" – especially for Sleepy End Devices (SEDs) like
+# battery-powered thermostats and sensors.
+#
+# Fix:
+#   1. Force-remove every non-Coordinator device from Z2M  (clears the
+#      in-memory request queues while keeping database.db intact on disk).
+#   2. Restart the Z2M addon (reloads devices from database.db with fresh
+#      internal state; the NCP coordinator session stays alive so devices
+#      don't need to re-pair).
+#   3. Verify that all devices reappear.
+#
+# Condition: only runs when  ha_restored_from_backup == true.
+# ==============================================================================
+
+# ------------------------------------------------------------------
+# Guard – skip unless a restore actually happened
+# ------------------------------------------------------------------
+- name: "Z2M refresh – Skip (no restore performed)"
+  ansible.builtin.debug:
+    msg: "No backup was restored – skipping Zigbee device refresh."
+  when: not (ha_restored_from_backup | default(false) | bool)
+
+# ------------------------------------------------------------------
+# Wait for Z2M to be connected to MQTT
+# ------------------------------------------------------------------
+- name: "Z2M refresh – Wait for MQTT bridge state"
+  ansible.builtin.shell: >-
+    mosquitto_sub
+    -h {{ ha_z2m_mqtt_broker_ip | quote }}
+    -p {{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') | int }}
+    -u {{ ha_z2m_mqtt_user | quote }}
+    -P {{ ha_z2m_mqtt_password | quote }}
+    -t 'zigbee2mqtt/bridge/state'
+    -C 1 -W 10
+  register: z2m_bridge_state
+  retries: 12
+  delay: 10
+  until:
+    - z2m_bridge_state.rc == 0
+    - "'online' in z2m_bridge_state.stdout"
+  changed_when: false
+  failed_when: false
+  when: ha_restored_from_backup | default(false) | bool
+
+- name: "Z2M refresh – Abort if Z2M not online"
+  ansible.builtin.debug:
+    msg: >-
+      Z2M bridge is not online on MQTT – skipping device refresh.
+      (state: {{ z2m_bridge_state.stdout | default('unreachable') }})
+  when:
+    - ha_restored_from_backup | default(false) | bool
+    - z2m_bridge_state.rc | default(1) != 0
+      or 'online' not in (z2m_bridge_state.stdout | default(''))
+
+# ------------------------------------------------------------------
+# Get current device list
+# ------------------------------------------------------------------
+- name: "Z2M refresh – Get device list via MQTT"
+  ansible.builtin.shell: >-
+    mosquitto_sub
+    -h {{ ha_z2m_mqtt_broker_ip | quote }}
+    -p {{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') | int }}
+    -u {{ ha_z2m_mqtt_user | quote }}
+    -P {{ ha_z2m_mqtt_password | quote }}
+    -t 'zigbee2mqtt/bridge/devices'
+    -C 1 -W 30
+  register: z2m_devices_raw
+  changed_when: false
+  when:
+    - ha_restored_from_backup | default(false) | bool
+    - z2m_bridge_state.rc | default(1) == 0
+    - "'online' in (z2m_bridge_state.stdout | default(''))"
+
+- name: "Z2M refresh – Parse end-device list"
+  ansible.builtin.set_fact:
+    z2m_refresh_devices: >-
+      {{ (z2m_devices_raw.stdout | from_json)
+         | rejectattr('type', 'equalto', 'Coordinator')
+         | list }}
+    z2m_refresh_ieee_list: >-
+      {{ (z2m_devices_raw.stdout | from_json)
+         | rejectattr('type', 'equalto', 'Coordinator')
+         | map(attribute='ieee_address')
+         | list }}
+  when:
+    - z2m_devices_raw is not skipped
+    - z2m_devices_raw.rc | default(1) == 0
+
+- name: "Z2M refresh – Show devices to refresh"
+  ansible.builtin.debug:
+    msg: >-
+      Found {{ z2m_refresh_ieee_list | default([]) | length }} end device(s)
+      to refresh: {{ z2m_refresh_ieee_list | default([]) | join(', ') }}
+  when: z2m_refresh_ieee_list is defined
+
+# ------------------------------------------------------------------
+# Force-remove each device (clears in-memory state, keeps database.db)
+# ------------------------------------------------------------------
+- name: "Z2M refresh – Force-remove devices"
+  ansible.builtin.shell: |
+    mosquitto_pub \
+      -h {{ ha_z2m_mqtt_broker_ip | quote }} \
+      -p {{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') | int }} \
+      -u {{ ha_z2m_mqtt_user | quote }} \
+      -P {{ ha_z2m_mqtt_password | quote }} \
+      -t 'zigbee2mqtt/bridge/request/device/remove' \
+      -m '{"id":"{{ item }}","force":true}'
+    sleep 2
+  loop: "{{ z2m_refresh_ieee_list | default([]) }}"
+  when:
+    - z2m_refresh_ieee_list is defined
+    - z2m_refresh_ieee_list | length > 0
+
+# ------------------------------------------------------------------
+# Restart Z2M addon (reloads devices from database.db with clean state)
+# ------------------------------------------------------------------
+- name: "Z2M refresh – Restart Z2M addon"
+  ansible.builtin.command:
+    cmd: >-
+      python3 /usr/local/bin/ha_supervisor_api.py
+        http://{{ hostvars[item]['ansible_host'] }}:{{ ha_port }}
+        {{ ha_tokens[item] }}
+        POST /addons/{{ z2m_slug | default('45df7312_zigbee2mqtt') }}/restart
+        --timeout 60
+  loop: "{{ groups['homeassistant'] }}"
+  when:
+    - item in ha_tokens
+    - z2m_refresh_ieee_list is defined
+    - z2m_refresh_ieee_list | length > 0
+
+- name: "Z2M refresh – Wait for Z2M to reconnect to MQTT"
+  ansible.builtin.shell: >-
+    mosquitto_sub
+    -h {{ ha_z2m_mqtt_broker_ip | quote }}
+    -p {{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') | int }}
+    -u {{ ha_z2m_mqtt_user | quote }}
+    -P {{ ha_z2m_mqtt_password | quote }}
+    -t 'zigbee2mqtt/bridge/state'
+    -C 1 -W 10
+  register: z2m_post_restart_state
+  retries: 18
+  delay: 10
+  until:
+    - z2m_post_restart_state.rc == 0
+    - "'online' in z2m_post_restart_state.stdout"
+  changed_when: false
+  when:
+    - z2m_refresh_ieee_list is defined
+    - z2m_refresh_ieee_list | length > 0
+
+# ------------------------------------------------------------------
+# Verify device recovery
+# ------------------------------------------------------------------
+- name: "Z2M refresh – Verify devices recovered"
+  ansible.builtin.shell: >-
+    mosquitto_sub
+    -h {{ ha_z2m_mqtt_broker_ip | quote }}
+    -p {{ hostvars['mqtt-broker']['service_backend_port'] | default('1883') | int }}
+    -u {{ ha_z2m_mqtt_user | quote }}
+    -P {{ ha_z2m_mqtt_password | quote }}
+    -t 'zigbee2mqtt/bridge/devices'
+    -C 1 -W 30
+  register: z2m_recovered_raw
+  changed_when: false
+  when:
+    - z2m_refresh_ieee_list is defined
+    - z2m_refresh_ieee_list | length > 0
+
+- name: "Z2M refresh – Parse recovered devices"
+  ansible.builtin.set_fact:
+    z2m_recovered_count: >-
+      {{ (z2m_recovered_raw.stdout | from_json)
+         | rejectattr('type', 'equalto', 'Coordinator')
+         | list | length }}
+  when:
+    - z2m_recovered_raw is not skipped
+    - z2m_recovered_raw.rc | default(1) == 0
+
+- name: "Z2M refresh – Show recovery result"
+  ansible.builtin.debug:
+    msg: >-
+      Zigbee device refresh complete.
+      Before: {{ z2m_refresh_ieee_list | default([]) | length }} device(s),
+      After: {{ z2m_recovered_count | default(0) }} device(s) recovered.
+      {{ 'All devices recovered successfully.'
+         if (z2m_recovered_count | default(0) | int) >= (z2m_refresh_ieee_list | default([]) | length)
+         else 'WARNING: Some devices may need a manual re-pair or battery pull.' }}
+  when: z2m_refresh_ieee_list is defined
