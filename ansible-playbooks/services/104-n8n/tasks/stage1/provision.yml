@@ -41,28 +41,32 @@
       - n8n_rootfs_size | lower != 'none'
     fail_msg: "Invalid n8n rootfs config '{{ n8n_rootfs_raw }}' (resolved storage='{{ n8n_rootfs_storage }}', size='{{ n8n_rootfs_size }}')."
 
-- name: "n8n (Stage 1) - Create n8n LXC container"
-  community.proxmox.proxmox:
-    api_host: "{{ proxmox_api_host }}"
-    api_user: "{{ proxmox_api_user }}"
-    api_token_id: "{{ proxmox_api_token_id }}"
-    api_token_secret: "{{ proxmox_api_token_secret }}"
-    node: "{{ proxmox_node }}"
-    vmid: "{{ hostvars[item]['service_id'] }}"
-    hostname: "{{ item }}"
-    ostemplate: "{{ default_lxc_template }}"
-    cores: "{{ n8n_container_cores }}"
-    memory: "{{ n8n_container_memory }}"
-    swap: 512
-    disk: "{{ n8n_rootfs_storage }}:{{ n8n_rootfs_size }}"
-    netif:
-      net0: "name=eth0,bridge=vmbr0,hwaddr={{ n8n_container_mac | default('BC:24:11:00:01:04') }},ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
-    pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
-    onboot: yes
-    state: present
+- name: "n8n (Stage 1) - Check if container already exists"
+  ansible.builtin.command: "pct status {{ hostvars[item]['service_id'] }}"
+  register: n8n_container_exists
+  changed_when: false
+  failed_when: false
   loop: "{{ groups['n8n'] }}"
   loop_control:
     label: "{{ item }} (VMID {{ hostvars[item]['service_id'] }})"
+
+- name: "n8n (Stage 1) - Create n8n LXC container"
+  ansible.builtin.command: >-
+    pct create {{ hostvars[item.item]['service_id'] }} {{ default_lxc_template }}
+    --hostname {{ item.item }}
+    --cores {{ n8n_container_cores }}
+    --memory {{ n8n_container_memory }}
+    --swap 512
+    --rootfs {{ n8n_rootfs_storage }}:{{ n8n_rootfs_size }}
+    --net0 name=eth0,bridge=vmbr0,hwaddr={{ n8n_container_mac | default('BC:24:11:00:01:04') }},ip={{ hostvars[item.item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}
+    --ssh-public-keys /root/.ssh/id_rsa.pub
+    --onboot 1
+  when: item.rc != 0
+  register: n8n_container_create
+  changed_when: true
+  loop: "{{ n8n_container_exists.results }}"
+  loop_control:
+    label: "{{ item.item }} (VMID {{ hostvars[item.item]['service_id'] }})"
 
 - name: "n8n (Stage 1) - Read container config"
   ansible.builtin.command: "pct config {{ hostvars[item]['service_id'] }}"
