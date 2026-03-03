@@ -1,0 +1,58 @@
+---
+- name: "Node-RED (Stage 3) - Wait for Node-RED HTTP port"
+  ansible.builtin.wait_for:
+    port: "{{ service_backend_port }}"
+    timeout: 45
+
+- name: "Node-RED (Stage 3) - Check Home Assistant API reachability"
+  ansible.builtin.uri:
+    url: "{{ nodered_ha_url }}/api/"
+    method: GET
+    status_code: [200, 401]
+    timeout: 10
+    headers: >-
+      {{
+        {'Authorization': 'Bearer ' ~ nodered_ha_token}
+        if (nodered_ha_token | default('') | length > 0)
+        else {}
+      }}
+  register: nodered_ha_api_probe
+  failed_when: false
+
+- name: "Node-RED (Stage 3) - Show Home Assistant API probe result"
+  ansible.builtin.debug:
+    msg: "Home Assistant API reachable from Node-RED host (HTTP {{ nodered_ha_api_probe.status | default('n/a') }})."
+
+- name: "Node-RED (Stage 3) - Check local Node-RED Admin API reachability"
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ service_backend_port }}/flows"
+    method: GET
+    force_basic_auth: true
+    url_username: "{{ nodered_admin_user }}"
+    url_password: "{{ nodered_admin_password }}"
+    status_code: [200, 401, 403]
+    timeout: 10
+  register: nodered_admin_api_probe
+  failed_when: false
+
+- name: "Node-RED (Stage 3) - Show Node-RED Admin API probe result"
+  ansible.builtin.debug:
+    msg: "Node-RED Admin API reachable (HTTP {{ nodered_admin_api_probe.status | default('n/a') }})."
+
+- name: "Node-RED (Stage 3) - Publish MQTT smoke message"
+  ansible.builtin.shell: >-
+    mosquitto_pub
+    -h {{ nodered_mqtt_broker_ip | quote }}
+    -p {{ nodered_mqtt_port | int }}
+    -u {{ nodered_mqtt_user | quote }}
+    -P {{ nodered_mqtt_password | quote }}
+    -t "homelab/nodered/stage3-smoke"
+    -m "nodered-stage3-smoke"
+  register: nodered_mqtt_probe
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: "Node-RED (Stage 3) - Show MQTT connectivity probe result"
+  ansible.builtin.debug:
+    msg: "MQTT publish probe from Node-RED host {{ 'succeeded' if (nodered_mqtt_probe.rc | default(1)) == 0 else 'failed' }} (rc={{ nodered_mqtt_probe.rc | default('n/a') }})."

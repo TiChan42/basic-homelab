@@ -1,0 +1,10 @@
+---
+# ==============================================================================
+# Stage 3: Configure service and run integration checks
+# ==============================================================================
+
+- name: "Node-RED (Stage 3) - Configure service and flows"
+  ansible.builtin.include_tasks: ../configure_nodered.yml
+
+- name: "Node-RED (Stage 3) - Validate integrations"
+  ansible.builtin.include_tasks: validate_integrations.yml

@@ -16,6 +16,7 @@
       - nfs-common
       - build-essential
       - python3
+      - mosquitto-clients
     state: present
     update_cache: yes
 

@@ -1,0 +1,7 @@
+---
+# ==============================================================================
+# Stage 1: Provision Node-RED LXC on Proxmox host
+# ==============================================================================
+
+- name: "Node-RED (Stage 1) - Provision container and host networking"
+  ansible.builtin.include_tasks: ../provision_container.yml
