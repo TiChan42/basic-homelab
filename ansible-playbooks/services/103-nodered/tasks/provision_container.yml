@@ -121,7 +121,7 @@
   loop_control:
     label: "{{ item }}"
 
-- name: Forward Node-RED port ({{ hostvars[item]['service_frontend_port'] }}) to container
+- name: Forward Node-RED port to container
   ansible.builtin.iptables:
     table: nat
     chain: PREROUTING
