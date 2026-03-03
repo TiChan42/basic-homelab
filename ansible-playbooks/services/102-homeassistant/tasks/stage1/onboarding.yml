@@ -98,7 +98,7 @@
     - item not in (ha_fresh_hosts | default([]))
   loop: "{{ groups['homeassistant'] }}"
 
-- name: "Homeassistant (Stage 1) - Submit login credentials"
+- name: "Homeassistant (Stage 1) - Submit login credentials (admin)"
   ansible.builtin.uri:
     url: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.json.flow_id }}"
     method: POST
@@ -111,14 +111,8 @@
       client_id: "http://{{ ha_initial_ips[item.item] }}:{{ ha_port | default('8123') }}/"
     status_code: [200]
     timeout: 30
-  register: login_result
-  retries: 10
-  delay: 5
-  until: >-
-    login_result.status is defined
-    and login_result.status == 200
-    and login_result.json is defined
-    and login_result.json.result is defined
+  register: login_result_admin
+  failed_when: false
   no_log: true
   when:
     - item.skipped is not defined or not item.skipped
@@ -127,12 +121,86 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: "Homeassistant (Stage 1) - Store login auth codes"
+- name: "Homeassistant (Stage 1) - Submit login credentials (default user fallback)"
+  ansible.builtin.uri:
+    url: "http://{{ ha_initial_ips[item.item.item] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.item.json.flow_id }}"
+    method: POST
+    headers:
+      Origin: "http://{{ ha_initial_ips[item.item.item] }}:{{ ha_port | default('8123') }}"
+    body_format: json
+    body:
+      username: "{{ default_user }}"
+      password: "{{ default_password }}"
+      client_id: "http://{{ ha_initial_ips[item.item.item] }}:{{ ha_port | default('8123') }}/"
+    status_code: [200]
+    timeout: 30
+  register: login_result_default
+  failed_when: false
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+    - item.json is not defined or item.json.result is not defined
+  loop: "{{ login_result_admin.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+
+- name: "Homeassistant (Stage 1) - Submit login credentials (machine fallback)"
+  ansible.builtin.uri:
+    url: "http://{{ ha_initial_ips[item.item.item.item] }}:{{ ha_port | default('8123') }}/auth/login_flow/{{ item.item.item.json.flow_id }}"
+    method: POST
+    headers:
+      Origin: "http://{{ ha_initial_ips[item.item.item.item] }}:{{ ha_port | default('8123') }}"
+    body_format: json
+    body:
+      username: "{{ machine_user }}"
+      password: "{{ machine_password }}"
+      client_id: "http://{{ ha_initial_ips[item.item.item.item] }}:{{ ha_port | default('8123') }}/"
+    status_code: [200]
+    timeout: 30
+  register: login_result_machine
+  failed_when: false
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+    - item.json is not defined or item.json.result is not defined
+  loop: "{{ login_result_default.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.item.item }}"
+
+- name: "Homeassistant (Stage 1) - Store login auth codes (admin)"
   ansible.builtin.set_fact:
     ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({_host: item.json.result}) }}"
   vars:
-    _host: "{{ item.item.item }}"
-  loop: "{{ login_result.results }}"
+    _host: "{{ groups['homeassistant'][0] }}"
+  loop: "{{ login_result_admin.results | default([]) }}"
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+    - item.json is defined
+    - item.json.result is defined
+
+- name: "Homeassistant (Stage 1) - Store login auth codes (default user fallback)"
+  ansible.builtin.set_fact:
+    ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({_host: item.json.result}) }}"
+  vars:
+    _host: "{{ groups['homeassistant'][0] }}"
+  loop: "{{ login_result_default.results | default([]) }}"
+  no_log: true
+  when:
+    - item.skipped is not defined or not item.skipped
+    - item.status is defined and item.status == 200
+    - item.json is defined
+    - item.json.result is defined
+
+- name: "Homeassistant (Stage 1) - Store login auth codes (machine fallback)"
+  ansible.builtin.set_fact:
+    ha_auth_codes: "{{ ha_auth_codes | default({}) | combine({_host: item.json.result}) }}"
+  vars:
+    _host: "{{ groups['homeassistant'][0] }}"
+  loop: "{{ login_result_machine.results | default([]) }}"
   no_log: true
   when:
     - item.skipped is not defined or not item.skipped
