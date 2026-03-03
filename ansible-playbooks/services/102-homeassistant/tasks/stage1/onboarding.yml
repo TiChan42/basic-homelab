@@ -86,9 +86,13 @@
         - "homeassistant"
         - null
       redirect_uri: "http://{{ ha_initial_ips[item] }}:{{ ha_port | default('8123') }}/"
-    status_code: [200]
+    status_code: [200, 404]
     timeout: 30
   register: login_flow
+  retries: 18
+  delay: 10
+  until: login_flow.status is defined and login_flow.status == 200
+  failed_when: false
   when:
     - item not in (ha_auth_codes | default({}))
     - item not in (ha_fresh_hosts | default([]))
