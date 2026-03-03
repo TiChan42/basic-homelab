@@ -4,10 +4,10 @@
 # ==============================================================================
 
 - name: "Node-RED (Stage 2) - Configure static networking"
-  ansible.builtin.include_tasks: ../configure_networking.yml
+  ansible.builtin.include_tasks: configure_networking.yml
 
 - name: "Node-RED (Stage 2) - Install Node-RED runtime"
-  ansible.builtin.include_tasks: ../install_nodered.yml
+  ansible.builtin.include_tasks: install_nodered.yml
 
 - name: "Node-RED (Stage 2) - Restore data from NAS backup"
-  ansible.builtin.include_tasks: ../restore_backup.yml
+  ansible.builtin.include_tasks: restore_backup.yml

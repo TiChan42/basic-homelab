@@ -4,7 +4,7 @@
 # ==============================================================================
 
 - name: "Node-RED (Stage 3) - Configure service and flows"
-  ansible.builtin.include_tasks: ../configure_nodered.yml
+  ansible.builtin.include_tasks: configure_nodered.yml
 
 - name: "Node-RED (Stage 3) - Ensure Node-RED service is enabled and running"
   ansible.builtin.systemd:

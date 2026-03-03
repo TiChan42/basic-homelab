@@ -4,7 +4,7 @@
 # ==============================================================================
 
 - name: "Node-RED (Stage 4) - Configure backup and restore automation"
-  ansible.builtin.include_tasks: ../setup_backup.yml
+  ansible.builtin.include_tasks: setup_backup.yml
 
 - name: "Node-RED (Stage 4) - Verify service and run initial backup"
-  ansible.builtin.include_tasks: ../verify_service.yml
+  ansible.builtin.include_tasks: verify_service.yml
