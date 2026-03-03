@@ -231,6 +231,7 @@ n8n_timezone: "{{ ha_timezone | default('Europe/Berlin') }}"
 n8n_basic_auth_user: "admin"                       # CHANGE THIS
 n8n_basic_auth_password: "CHANGE_ME_NOW"           # CHANGE THIS – use ansible-vault!
 n8n_encryption_key: "CHANGE_ME_32PLUS_CHARS"       # CHANGE THIS – keep stable, else credential decryption fails after restore
+n8n_secure_cookie: false                             # false for HTTP/LAN access; set true when HTTPS/TLS is enabled
 
 # n8n MQTT connection (reuses MQTT broker settings)
 n8n_mqtt_broker_ip: "{{ hostvars['mqtt-broker']['ansible_host'] | default('192.168.1.101') }}"

@@ -34,7 +34,12 @@ http:
       service: api@internal
       middlewares:
         - dashboard-auth
-      tls: {}
+      tls:
+{% if (traefik_tls_provider | default('letsencrypt')) == 'letsencrypt' %}
+        certResolver: letsencrypt
+{% else %}
+        {}
+{% endif %}
 
 {% endif %}
 {% for host in groups['all'] | default([]) %}
@@ -62,7 +67,12 @@ http:
       entryPoints:
         - websecure
       service: {{ host }}
-      tls: {}
+      tls:
+{% if (traefik_tls_provider | default('letsencrypt')) == 'letsencrypt' %}
+        certResolver: letsencrypt
+{% else %}
+        {}
+{% endif %}
 
     {{ host }}-http:
       rule: "{{ host_rule }}"
@@ -84,7 +94,7 @@ http:
 {% endif %}
 {% endfor %}
 
-{% if traefik_https_enabled | default(true) | bool %}
+{% if traefik_https_enabled | default(true) | bool and (traefik_tls_provider | default('letsencrypt')) == 'selfsigned' %}
 # --- TLS Configuration ---
 tls:
   certificates:

@@ -81,6 +81,21 @@
     path: "{{ traefik_tls_cert_dir }}/wildcard.crt"
   register: wildcard_present
 
+- name: Read wildcard certificate SANs
+  command: >-
+    openssl x509 -in {{ traefik_tls_cert_dir }}/wildcard.crt
+    -noout -ext subjectAltName
+  register: wildcard_san
+  changed_when: false
+  when: wildcard_present.stat.exists
+
+- name: Determine whether wildcard certificate matches configured base domain
+  set_fact:
+    wildcard_domain_mismatch: >-
+      {{ (not wildcard_present.stat.exists)
+         or (('DNS:*.' ~ traefik_base_domain) not in (wildcard_san.stdout | default('')))
+         or (('DNS:' ~ traefik_base_domain) not in (wildcard_san.stdout | default(''))) }}
+
 - name: Generate wildcard certificate for *.{{ traefik_base_domain }}
   block:
     - name: Generate wildcard private key (2048 bit RSA)
@@ -128,7 +143,7 @@
         -sha256
         -extensions v3_req
         -extfile {{ traefik_tls_cert_dir }}/wildcard.cnf
-  when: not wildcard_present.stat.exists
+  when: wildcard_domain_mismatch | bool
   notify: Restart traefik service
 
 # ── 3. Fullchain (wildcard + CA) for browsers ────────────

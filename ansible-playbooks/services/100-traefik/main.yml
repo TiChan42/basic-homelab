@@ -58,7 +58,9 @@
 
     - name: Include TLS certificate generation
       include_tasks: tasks/generate_tls_certificates.yml
-      when: traefik_https_enabled | default(true) | bool
+      when:
+        - traefik_https_enabled | default(true) | bool
+        - (traefik_tls_provider | default('letsencrypt')) == 'selfsigned'
 
     - name: Include Traefik configuration tasks
       include_tasks: tasks/configure_traefik.yml

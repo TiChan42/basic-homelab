@@ -40,6 +40,17 @@ providers:
     directory: /etc/traefik/dynamic
     watch: true
 
+{% if traefik_https_enabled | default(true) | bool and (traefik_tls_provider | default('letsencrypt')) == 'letsencrypt' %}
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "{{ traefik_letsencrypt_email }}"
+      storage: /etc/traefik/acme/acme.json
+      caServer: "{{ traefik_letsencrypt_ca_server | default('https://acme-v02.api.letsencrypt.org/directory') }}"
+      httpChallenge:
+        entryPoint: web
+{% endif %}
+
 # --- Logging ---
 log:
   level: "{{ traefik_log_level | default('INFO') }}"

@@ -10,6 +10,17 @@
     mode: '0644'
   notify: Restart traefik service
 
+- name: Ensure ACME storage file exists (Let's Encrypt)
+  file:
+    path: /etc/traefik/acme/acme.json
+    state: touch
+    owner: root
+    group: root
+    mode: '0600'
+  when:
+    - traefik_https_enabled | default(true) | bool
+    - (traefik_tls_provider | default('letsencrypt')) == 'letsencrypt'
+
 - name: Deploy Traefik dynamic configuration (services routing)
   template:
     src: templates/services.yml.j2

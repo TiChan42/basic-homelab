@@ -1,0 +1,76 @@
+[
+  {
+    "id": "manualIntegrationSmoke001",
+    "name": "Manual Integration Smoke Test - HA NodeRed MQTT",
+    "active": false,
+    "settings": {
+      "executionOrder": "v1"
+    },
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "1",
+        "name": "Manual Trigger",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [260, 300]
+      },
+      {
+        "parameters": {
+          "jsCode": "async function getStatus(url) {\n  try {\n    const response = await this.helpers.httpRequest({\n      method: 'GET',\n      url,\n      returnFullResponse: true,\n      ignoreHttpStatusErrors: true,\n    });\n    return response.statusCode ?? response.status ?? 'unknown';\n  } catch (error) {\n    return `error:${error.message}`;\n  }\n}\n\nconst haStatus = await getStatus.call(this, 'http://192.168.1.102:8123/api/');\nconst nodeRedStatus = await getStatus.call(this, 'http://192.168.1.103:1880/settings');\n\nreturn [{\n  json: {\n    ha_http_status: haStatus,\n    nodered_http_status: nodeRedStatus\n  }\n}];"
+        },
+        "id": "2",
+        "name": "Check HA NodeRed MQTT",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [520, 300]
+      },
+      {
+        "parameters": {
+          "topic": "homelab/n8n/manual-test",
+          "sendInputData": false,
+          "message": "n8n manual integration smoke test",
+          "options": {
+            "qos": 0,
+            "retain": false
+          }
+        },
+        "id": "3",
+        "name": "Publish MQTT Smoke Message",
+        "type": "n8n-nodes-base.mqtt",
+        "typeVersion": 1,
+        "position": [780, 300],
+        "credentials": {
+          "mqtt": {
+            "id": "mqttHomelabBroker001",
+            "name": "MQTT Homelab Broker"
+          }
+        }
+      }
+    ],
+    "connections": {
+      "Manual Trigger": {
+        "main": [
+          [
+            {
+              "node": "Check HA NodeRed MQTT",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Check HA NodeRed MQTT": {
+        "main": [
+          [
+            {
+              "node": "Publish MQTT Smoke Message",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+]
