@@ -45,6 +45,32 @@
       - mqtt_rootfs_size | lower != 'none'
     fail_msg: "Invalid MQTT rootfs config '{{ mqtt_rootfs_raw }}' (resolved storage='{{ mqtt_rootfs_storage }}', size='{{ mqtt_rootfs_size }}')."
 
+- name: Detect malformed MQTT container rootfs config
+  shell: |
+    VMID={{ hostvars[item]['service_id'] }}
+    if pct config "$VMID" 2>/dev/null | grep -Eq '^rootfs: [^,]+:[0-9]+$'; then
+      echo BROKEN
+    else
+      echo OK
+    fi
+  register: mqtt_rootfs_health
+  changed_when: false
+  loop: "{{ groups['mqtt_brokers'] }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Remove malformed MQTT container config/state
+  shell: |
+    VMID={{ hostvars[item.item]['service_id'] }}
+    pct stop "$VMID" >/dev/null 2>&1 || true
+    pct destroy "$VMID" --purge >/dev/null 2>&1 || true
+    rm -f "/etc/pve/lxc/${VMID}.conf"
+  when: item.stdout is search('BROKEN')
+  changed_when: true
+  loop: "{{ mqtt_rootfs_health.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 # ------------------------------------------------------------------
 # Container creation
 # ------------------------------------------------------------------
