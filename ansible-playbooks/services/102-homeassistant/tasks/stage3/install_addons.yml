@@ -217,10 +217,30 @@
     z2m_state_check.rc == 0
     and (z2m_state_check.stdout | from_json).get('state', '') == 'started'
   changed_when: false
+  failed_when: false
+  ignore_errors: true
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
     - not (z2m_running | bool)
+
+- name: "Homeassistant (Stage 3) - Determine effective Z2M startup state"
+  ansible.builtin.set_fact:
+    z2m_effective_running: >-
+      {{ z2m_state_check.results | default([])
+         | selectattr('stdout', 'defined')
+         | map(attribute='stdout')
+         | map('from_json')
+         | selectattr('state', 'defined')
+         | selectattr('state', 'equalto', 'started')
+         | list | length > 0 }}
+
+- name: "Homeassistant (Stage 3) - Show effective Z2M startup state"
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Z2M is started and ready.'
+         if (z2m_effective_running | default(z2m_running | default(false)))
+         else 'Z2M remains in startup state. Continuing deployment without blocking.' }}
 
 - name: "Homeassistant (Stage 3) - Enable Z2M auto-start & watchdog"
   ansible.builtin.command:
@@ -232,7 +252,9 @@
         '{"boot": "auto", "watchdog": true, "ingress_panel": true}'
   changed_when: true
   loop: "{{ groups['homeassistant'] }}"
-  when: item in ha_tokens
+  when:
+    - item in ha_tokens
+    - (z2m_effective_running | default(z2m_running | default(false)))
 
 # --- Fix Z2M configuration.yaml ---------------------------------------------------
 # Z2M 2.x writes configuration.yaml with potentially unquoted YAML-special
@@ -253,7 +275,9 @@
     and (z2m_config_wait.stdout | from_json).get('exitcode', 1) == 0
   changed_when: false
   loop: "{{ groups['homeassistant'] }}"
-  when: item in ha_tokens
+  when:
+    - item in ha_tokens
+    - (z2m_effective_running | default(z2m_running | default(false)))
 
 - name: "Homeassistant (Stage 3) - Fix Z2M config"
   ansible.builtin.shell: |
@@ -308,7 +332,9 @@
   register: z2m_config_fix
   changed_when: "'CHANGED' in z2m_config_fix.stdout"
   loop: "{{ groups['homeassistant'] }}"
-  when: item in ha_tokens
+  when:
+    - item in ha_tokens
+    - (z2m_effective_running | default(z2m_running | default(false)))
 
 - name: "Homeassistant (Stage 3) - Restart Z2M after config fix"
   ansible.builtin.command:
