@@ -112,6 +112,13 @@
     status_code: [200]
     timeout: 30
   register: login_result
+  retries: 10
+  delay: 5
+  until: >-
+    login_result.status is defined
+    and login_result.status == 200
+    and login_result.json is defined
+    and login_result.json.result is defined
   no_log: true
   when:
     - item.skipped is not defined or not item.skipped
@@ -130,6 +137,8 @@
   when:
     - item.skipped is not defined or not item.skipped
     - item.status is defined and item.status == 200
+    - item.json is defined
+    - item.json.result is defined
 
 # ------------------------------------------------------------------
 # Exchange auth_code for access + refresh tokens
