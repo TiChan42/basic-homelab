@@ -18,9 +18,11 @@
 # onboarding system is ready.  Once initialised it responds with
 #   200 – fresh install (onboarding needed)
 #   401 – already onboarded (login flow needed)
-# We retry on 401 for up to ~2 min to let the transient phase pass.
-# If it is STILL 401 after retries, failed_when:false keeps the
-# play running and we treat it as "already onboarded".
+#
+# When a VM was freshly provisioned (ha_provisioning_needed=true)
+# we KNOW it must be a first-run → only accept 200 (retry on
+# transient 401).  For an existing, running VM we accept 401
+# immediately to avoid a long unnecessary retry loop.
 # ------------------------------------------------------------------
 - name: "Homeassistant (Stage 1) - Check onboarding state"
   ansible.builtin.uri:
@@ -31,7 +33,15 @@
   register: onboarding_status
   retries: 36
   delay: 10
-  until: onboarding_status.status is defined and onboarding_status.status in [200, 401, 404]
+  until: >-
+    onboarding_status.status is defined
+    and (
+      onboarding_status.status == 200
+      or (
+        onboarding_status.status in [401, 404]
+        and not (ha_provisioning_needed | default(false) | bool)
+      )
+    )
   failed_when: false
   loop: "{{ groups['homeassistant'] }}"
 
