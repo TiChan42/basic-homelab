@@ -24,6 +24,23 @@
     state: directory
     mode: '0777'
 
+- name: "n8n (Stage 1) - Normalize rootfs configuration"
+  ansible.builtin.set_fact:
+    n8n_rootfs_raw: "{{ n8n_container_rootfs | default((default_storage | default('local-lvm', true)) ~ ':8', true) | string }}"
+    n8n_rootfs_storage: "{{ (n8n_container_rootfs | default((default_storage | default('local-lvm', true)) ~ ':8', true) | string).split(':')[0] }}"
+    n8n_rootfs_size: "{{ (n8n_container_rootfs | default((default_storage | default('local-lvm', true)) ~ ':8', true) | string).split(':')[-1] }}"
+
+- name: "n8n (Stage 1) - Validate rootfs configuration"
+  ansible.builtin.assert:
+    that:
+      - n8n_rootfs_storage is defined
+      - n8n_rootfs_storage | trim | length > 0
+      - n8n_rootfs_storage | lower != 'none'
+      - n8n_rootfs_size is defined
+      - n8n_rootfs_size | trim | length > 0
+      - n8n_rootfs_size | lower != 'none'
+    fail_msg: "Invalid n8n rootfs config '{{ n8n_rootfs_raw }}' (resolved storage='{{ n8n_rootfs_storage }}', size='{{ n8n_rootfs_size }}')."
+
 - name: "n8n (Stage 1) - Create n8n LXC container"
   community.proxmox.proxmox:
     api_host: "{{ proxmox_api_host }}"
@@ -37,7 +54,7 @@
     cores: "{{ n8n_container_cores }}"
     memory: "{{ n8n_container_memory }}"
     swap: 512
-    disk: "{{ n8n_container_rootfs }}"
+    disk: "{{ n8n_rootfs_storage }}:{{ n8n_rootfs_size }}"
     netif:
       net0: "name=eth0,bridge=vmbr0,hwaddr={{ n8n_container_mac | default('BC:24:11:00:01:04') }},ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
     pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
