@@ -28,31 +28,52 @@
   command: "pveam download local {{ default_lxc_template.split('/')[-1] }}"
   when: default_lxc_template.split('/')[-1] not in pveam_list.stdout
 
+- name: Normalize Node-RED rootfs configuration
+  set_fact:
+    nodered_rootfs_raw: "{{ nodered_container_rootfs | default((default_storage | default('local-lvm', true)) ~ ':4', true) | string }}"
+    nodered_rootfs_storage: "{{ (nodered_container_rootfs | default((default_storage | default('local-lvm', true)) ~ ':4', true) | string).split(':')[0] }}"
+    nodered_rootfs_size: "{{ (nodered_container_rootfs | default((default_storage | default('local-lvm', true)) ~ ':4', true) | string).split(':')[-1] }}"
+
+- name: Validate Node-RED rootfs configuration
+  assert:
+    that:
+      - nodered_rootfs_storage is defined
+      - nodered_rootfs_storage | trim | length > 0
+      - nodered_rootfs_storage | lower != 'none'
+      - nodered_rootfs_size is defined
+      - nodered_rootfs_size | trim | length > 0
+      - nodered_rootfs_size | lower != 'none'
+    fail_msg: "Invalid Node-RED rootfs config '{{ nodered_rootfs_raw }}' (resolved storage='{{ nodered_rootfs_storage }}', size='{{ nodered_rootfs_size }}')."
+
 # ------------------------------------------------------------------
 # Container creation
 # ------------------------------------------------------------------
-- name: Create Node-RED LXC container
-  community.proxmox.proxmox:
-    api_host: "{{ proxmox_api_host }}"
-    api_user: "{{ proxmox_api_user }}"
-    api_token_id: "{{ proxmox_api_token_id }}"
-    api_token_secret: "{{ proxmox_api_token_secret }}"
-    node: "{{ proxmox_node }}"
-    vmid: "{{ hostvars[item]['service_id'] }}"
-    hostname: "{{ item }}"
-    ostemplate: "{{ default_lxc_template }}"
-    cores: "{{ nodered_container_cores }}"
-    memory: "{{ nodered_container_memory }}"
-    swap: 512
-    disk: "{{ nodered_container_rootfs }}"
-    netif:
-      net0: "name=eth0,bridge=vmbr0,hwaddr={{ nodered_container_mac | default('BC:24:11:00:01:03') }},ip={{ hostvars[item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}"
-    pubkey: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
-    onboot: yes
-    state: present
+- name: Check if Node-RED container already exists
+  command: "pct status {{ hostvars[item]['service_id'] }}"
+  register: nodered_container_exists
+  changed_when: false
+  failed_when: false
   loop: "{{ groups['nodered'] }}"
   loop_control:
     label: "{{ item }} (VMID {{ hostvars[item]['service_id'] }})"
+
+- name: Create Node-RED LXC container
+  command: >-
+    pct create {{ hostvars[item.item]['service_id'] }} {{ default_lxc_template }}
+    --hostname {{ item.item }}
+    --cores {{ nodered_container_cores }}
+    --memory {{ nodered_container_memory }}
+    --swap 512
+    --rootfs {{ nodered_rootfs_storage }}:{{ nodered_rootfs_size }}
+    --net0 name=eth0,bridge=vmbr0,hwaddr={{ nodered_container_mac | default('BC:24:11:00:01:03') }},ip={{ hostvars[item.item]['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}
+    --ssh-public-keys /root/.ssh/id_rsa.pub
+    --onboot 1
+  when: item.rc != 0
+  register: nodered_container_create
+  changed_when: true
+  loop: "{{ nodered_container_exists.results }}"
+  loop_control:
+    label: "{{ item.item }} (VMID {{ hostvars[item.item]['service_id'] }})"
 
 # ------------------------------------------------------------------
 # NAS bind mount (host /mnt/nas → container /mnt/nas)
