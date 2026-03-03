@@ -198,6 +198,8 @@
   retries: 3
   delay: 15
   until: z2m_start.rc == 0
+  failed_when: false
+  ignore_errors: true
   loop: "{{ groups['homeassistant'] }}"
   when:
     - item in ha_tokens
