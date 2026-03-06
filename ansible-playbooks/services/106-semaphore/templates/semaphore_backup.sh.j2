@@ -1,0 +1,120 @@
+#!/bin/bash
+# ============================================
+# Semaphore Backup Script – managed by Ansible
+# Creates a validated tar.gz archive of Semaphore
+# data on NAS with numbered rotation (0 = newest).
+#
+# Improvement over MQTT: NO service stop required.
+# BoltDB is copied while Semaphore is running
+# (BoltDB supports concurrent readers).
+# ============================================
+set -euo pipefail
+
+BACKUP_DIR="{{ nas_backup_mount }}/semaphore"
+DATA_DIR="{{ semaphore_data_dir }}"
+CONFIG_FILE="{{ semaphore_config_path }}"
+LOG_TAG="semaphore-backup"
+MIN_BACKUP_SIZE={{ semaphore_backup_min_size }}
+KEEP_COUNT={{ semaphore_backup_keep_count }}
+
+TMP_FILE="$BACKUP_DIR/.semaphore_backup_creating.tar.gz"
+BACKUP_PREFIX="$BACKUP_DIR/semaphore_backup"
+
+logger -t "$LOG_TAG" "Starting Semaphore backup..."
+
+# 1. Check NFS mount is available
+if ! mountpoint -q "{{ nas_mount }}"; then
+  logger -t "$LOG_TAG" "ERROR: NAS mount not available at {{ nas_mount }}"
+  exit 1
+fi
+
+mkdir -p "$BACKUP_DIR"
+
+# 2. Build list of paths to archive
+ARCHIVE_CONTENTS=()
+
+if [ -d "$DATA_DIR" ]; then
+  ARCHIVE_CONTENTS+=("$DATA_DIR")
+fi
+
+if [ -f "$CONFIG_FILE" ]; then
+  ARCHIVE_CONTENTS+=("$CONFIG_FILE")
+fi
+
+if [ {% raw %}${#ARCHIVE_CONTENTS[@]}{% endraw %} -eq 0 ]; then
+  logger -t "$LOG_TAG" "ERROR: No files to backup."
+  exit 1
+fi
+
+# 3. Overwrite protection: skip if current DB is empty but backup has data
+if [ -f "$DATA_DIR/database.boltdb" ]; then
+  CURRENT_DB_SIZE=$(stat -c%s "$DATA_DIR/database.boltdb" 2>/dev/null || stat -f%z "$DATA_DIR/database.boltdb" 2>/dev/null || echo "0")
+else
+  CURRENT_DB_SIZE=0
+fi
+
+if [ "$CURRENT_DB_SIZE" -lt "$MIN_BACKUP_SIZE" ] && [ -f "${BACKUP_PREFIX}.0.tar.gz" ]; then
+  # Current DB is tiny/empty but we have an existing backup – skip to prevent data loss
+  EXISTING_SIZE=$(stat -c%s "${BACKUP_PREFIX}.0.tar.gz" 2>/dev/null || stat -f%z "${BACKUP_PREFIX}.0.tar.gz" 2>/dev/null || echo "0")
+  if [ "$EXISTING_SIZE" -gt "$MIN_BACKUP_SIZE" ]; then
+    logger -t "$LOG_TAG" "WARNING: Current database too small (${CURRENT_DB_SIZE} bytes) but existing backup has ${EXISTING_SIZE} bytes. Skipping to prevent data loss."
+    exit 0
+  fi
+fi
+
+# 4. Create archive (hot copy – no service stop needed)
+tar -czf "$TMP_FILE" "${ARCHIVE_CONTENTS[@]}" 2>/dev/null
+
+# 5. Validate: file exists and has content
+if [ ! -s "$TMP_FILE" ]; then
+  logger -t "$LOG_TAG" "ERROR: Created archive is empty. Keeping previous backups."
+  rm -f "$TMP_FILE"
+  exit 1
+fi
+
+# 6. Validate: minimum size
+FILE_SIZE=$(stat -c%s "$TMP_FILE" 2>/dev/null || stat -f%z "$TMP_FILE" 2>/dev/null || echo "0")
+if [ "$FILE_SIZE" -lt "$MIN_BACKUP_SIZE" ]; then
+  logger -t "$LOG_TAG" "ERROR: Backup too small (${FILE_SIZE} bytes, min ${MIN_BACKUP_SIZE}). Keeping previous backups."
+  rm -f "$TMP_FILE"
+  exit 1
+fi
+
+# 7. Validate: valid tar.gz archive
+if ! tar -tzf "$TMP_FILE" > /dev/null 2>&1; then
+  logger -t "$LOG_TAG" "ERROR: Created file is not a valid tar.gz archive. Keeping previous backups."
+  rm -f "$TMP_FILE"
+  exit 1
+fi
+
+# 8. Size-drop protection (like Node-RED's approach)
+if [ -f "${BACKUP_PREFIX}.0.tar.gz" ]; then
+  EXISTING_SIZE=$(stat -c%s "${BACKUP_PREFIX}.0.tar.gz" 2>/dev/null || echo "0")
+  if [ "$EXISTING_SIZE" -gt "$MIN_BACKUP_SIZE" ] && [ "$FILE_SIZE" -lt $(( EXISTING_SIZE / 2 )) ]; then
+    logger -t "$LOG_TAG" "WARNING: New backup (${FILE_SIZE} bytes) is less than half the existing (${EXISTING_SIZE} bytes). Skipping to prevent data loss."
+    rm -f "$TMP_FILE"
+    exit 0
+  fi
+fi
+
+# 9. Rotate numbered backups: delete oldest, shift down, move new to 0
+rm -f "${BACKUP_PREFIX}.$((KEEP_COUNT - 1)).tar.gz"
+
+for (( i = KEEP_COUNT - 2; i >= 0; i-- )); do
+  if [ -f "${BACKUP_PREFIX}.${i}.tar.gz" ]; then
+    mv -f "${BACKUP_PREFIX}.${i}.tar.gz" "${BACKUP_PREFIX}.$((i + 1)).tar.gz"
+  fi
+done
+
+mv -f "$TMP_FILE" "${BACKUP_PREFIX}.0.tar.gz"
+
+# 10. Write metadata
+cat > "$BACKUP_DIR/backup_meta.txt" <<EOF
+backup_date=$(date -Iseconds)
+hostname=$(hostname)
+file_size=${FILE_SIZE}
+keep_count=${KEEP_COUNT}
+semaphore_version=$(semaphore version 2>/dev/null || echo "unknown")
+EOF
+
+logger -t "$LOG_TAG" "Semaphore backup completed successfully (${FILE_SIZE} bytes) -> ${BACKUP_PREFIX}.0.tar.gz"

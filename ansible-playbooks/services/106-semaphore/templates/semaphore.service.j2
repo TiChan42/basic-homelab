@@ -1,0 +1,14 @@
+[Unit]
+Description=Ansible Semaphore UI
+After=network.target semaphore-restore.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/semaphore server --config {{ semaphore_config_path }}
+Restart=always
+RestartSec=10
+WorkingDirectory={{ semaphore_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

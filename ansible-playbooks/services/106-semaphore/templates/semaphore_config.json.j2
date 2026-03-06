@@ -1,0 +1,18 @@
+{
+    "bolt": {
+        "host": "{{ semaphore_data_dir }}/database.boltdb"
+    },
+    "tmp_path": "{{ semaphore_tmp_path }}",
+    "port": "{{ service_backend_port }}",
+    "interface": "0.0.0.0",
+    "cookie_hash": "{{ semaphore_cookie_hash }}",
+    "cookie_encryption": "{{ semaphore_cookie_encryption }}",
+    "access_key_encryption": "{{ semaphore_access_key_encryption }}",
+    "email_alert": false,
+    "telegram_alert": false,
+    "slack_alert": false,
+    "ldap_enable": false,
+    "concurrency_mode": "node",
+    "max_parallel_tasks": 0,
+    "git_client": ""
+}

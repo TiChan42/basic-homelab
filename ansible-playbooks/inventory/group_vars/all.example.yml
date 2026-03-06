@@ -252,3 +252,36 @@ n8n_backup_cron_minute: "30"
 n8n_backup_cron_hour: "*/6"                        # Every 6 hours (offset :30)
 n8n_backup_min_size: 1024                           # Minimum backup size in bytes (1 KB)
 n8n_backup_keep_count: 3                            # Number of rotated backups to keep
+
+# ==============================================================================
+# Ansible Semaphore – Service-specific settings
+# ==============================================================================
+semaphore_container_memory: "512"
+semaphore_container_cores: "1"
+semaphore_container_rootfs: "{{ default_storage }}:4"
+
+# Semaphore data directory (BoltDB, SSH keys, project data)
+semaphore_data_dir: "/opt/semaphore"
+semaphore_config_path: "/etc/semaphore/config.json"
+semaphore_tmp_path: "/tmp/semaphore"
+
+# Semaphore version – leave empty to auto-detect latest from GitHub
+# semaphore_version: "2.10.43"
+
+# Semaphore admin user
+semaphore_admin_user: "admin"                      # CHANGE THIS
+semaphore_admin_password: "CHANGE_ME_NOW"          # CHANGE THIS – use ansible-vault!
+semaphore_admin_email: "admin@homelab.local"
+semaphore_admin_name: "Admin"
+
+# Git repository for initial project setup
+semaphore_git_repo_url: "{{ repo_url }}"
+semaphore_git_repo_branch: "main"
+
+# Semaphore Backup settings
+semaphore_backup_script_path: "/usr/local/bin/semaphore_backup.sh"
+semaphore_restore_script_path: "/usr/local/bin/semaphore_restore.sh"
+semaphore_backup_cron_minute: "45"
+semaphore_backup_cron_hour: "*/6"                  # Every 6 hours (offset :45)
+semaphore_backup_min_size: 1024                     # Minimum backup size in bytes (1 KB)
+semaphore_backup_keep_count: 3                      # Number of rotated backups to keep

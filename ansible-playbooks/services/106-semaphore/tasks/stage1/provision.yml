@@ -1,0 +1,140 @@
+---
+# ==============================================================================
+# Stage 1: Provision Semaphore LXC container on Proxmox host
+# ==============================================================================
+# Runs on: localhost (Proxmox host)
+# Creates the LXC container, configures NAS bind mount, host-side networking.
+#
+# Improvements over older services:
+#   - command-based NAS mount check (no shell scripts)
+#   - rootfs validation before creation
+#   - mode '0755' on backup dirs (not '0777')
+#   - iptables rules persisted via iptables-save + @reboot cron
+#   - NAS backup dir created ONCE here (not duplicated in later stages)
+#   - FQCN (ansible.builtin.*) used consistently
+# ==============================================================================
+
+- name: "Semaphore (Stage 1) - Ensure Proxmox API Python library is installed"
+  ansible.builtin.apt:
+    name: python3-proxmoxer
+    state: present
+    update_cache: yes
+
+- name: "Semaphore (Stage 1) - Get available local LXC templates"
+  ansible.builtin.command: pveam list local
+  register: semaphore_pveam_list
+  changed_when: false
+
+- name: "Semaphore (Stage 1) - Download default LXC template when missing"
+  ansible.builtin.command: "pveam download local {{ default_lxc_template.split('/')[-1] }}"
+  when: default_lxc_template.split('/')[-1] not in semaphore_pveam_list.stdout
+
+# --- NAS backup directory (created ONCE, not duplicated in later stages) ---
+- name: "Semaphore (Stage 1) - Ensure NAS backup directory exists"
+  ansible.builtin.file:
+    path: "{{ nas_backup_mount }}/semaphore"
+    state: directory
+    mode: '0755'
+
+# --- Rootfs validation (prevents silent failures from bad config) ---
+- name: "Semaphore (Stage 1) - Normalize rootfs configuration"
+  ansible.builtin.set_fact:
+    semaphore_rootfs_raw: "{{ semaphore_container_rootfs | default((default_storage | default('local-lvm', true)) ~ ':4', true) | string }}"
+    semaphore_rootfs_storage: "{{ (semaphore_container_rootfs | default((default_storage | default('local-lvm', true)) ~ ':4', true) | string).split(':')[0] }}"
+    semaphore_rootfs_size: "{{ (semaphore_container_rootfs | default((default_storage | default('local-lvm', true)) ~ ':4', true) | string).split(':')[-1] }}"
+
+- name: "Semaphore (Stage 1) - Validate rootfs configuration"
+  ansible.builtin.assert:
+    that:
+      - semaphore_rootfs_storage is defined
+      - semaphore_rootfs_storage | trim | length > 0
+      - semaphore_rootfs_storage | lower != 'none'
+      - semaphore_rootfs_size is defined
+      - semaphore_rootfs_size | trim | length > 0
+      - semaphore_rootfs_size | lower != 'none'
+    fail_msg: >-
+      Invalid Semaphore rootfs config '{{ semaphore_rootfs_raw }}'
+      (resolved storage='{{ semaphore_rootfs_storage }}', size='{{ semaphore_rootfs_size }}').
+
+# --- Container creation (pct create CLI – more robust than API module) ---
+- name: "Semaphore (Stage 1) - Check if container already exists"
+  ansible.builtin.command: "pct status {{ hostvars['semaphore']['service_id'] }}"
+  register: semaphore_container_exists
+  changed_when: false
+  failed_when: false
+
+- name: "Semaphore (Stage 1) - Create Semaphore LXC container"
+  ansible.builtin.command: >-
+    pct create {{ hostvars['semaphore']['service_id'] }} {{ default_lxc_template }}
+    --hostname semaphore
+    --cores {{ semaphore_container_cores }}
+    --memory {{ semaphore_container_memory }}
+    --swap 256
+    --rootfs {{ semaphore_rootfs_storage }}:{{ semaphore_rootfs_size }}
+    --net0 name=eth0,bridge=vmbr0,ip={{ hostvars['semaphore']['ansible_host'] }}{{ network_cidr }},gw={{ network_gateway }}
+    --ssh-public-keys /root/.ssh/id_rsa.pub
+    --onboot 1
+  when: semaphore_container_exists.rc != 0
+  changed_when: true
+
+# --- NAS bind mount (command-based check, not shell script) ---
+- name: "Semaphore (Stage 1) - Read container config"
+  ansible.builtin.command: "pct config {{ hostvars['semaphore']['service_id'] }}"
+  register: semaphore_pct_config
+  changed_when: false
+
+- name: "Semaphore (Stage 1) - Configure NAS bind mount on container"
+  ansible.builtin.command: "pct set {{ hostvars['semaphore']['service_id'] }} -mp0 {{ nas_mount }},mp={{ nas_mount }}"
+  when: "'mp0:' not in semaphore_pct_config.stdout"
+  changed_when: true
+
+# --- Start container ---
+- name: "Semaphore (Stage 1) - Ensure container is running"
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_api_host }}"
+    api_user: "{{ proxmox_api_user }}"
+    api_token_id: "{{ proxmox_api_token_id }}"
+    api_token_secret: "{{ proxmox_api_token_secret }}"
+    node: "{{ proxmox_node }}"
+    vmid: "{{ hostvars['semaphore']['service_id'] }}"
+    hostname: "semaphore"
+    state: started
+
+- name: "Semaphore (Stage 1) - Wait for SSH"
+  ansible.builtin.wait_for:
+    host: "{{ hostvars['semaphore']['ansible_host'] }}"
+    port: 22
+    timeout: 60
+    delay: 5
+    search_regex: OpenSSH
+
+# --- Host-side networking ---
+- name: "Semaphore (Stage 1) - Add DNS entry to /etc/hosts"
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "{{ hostvars['semaphore']['ansible_host'] }} semaphore"
+    state: present
+    mode: '0644'
+
+- name: "Semaphore (Stage 1) - Configure port forwarding"
+  ansible.builtin.iptables:
+    table: nat
+    chain: PREROUTING
+    protocol: tcp
+    destination_port: "{{ hostvars['semaphore']['service_frontend_port'] }}"
+    jump: DNAT
+    to_destination: "{{ hostvars['semaphore']['ansible_host'] }}:{{ hostvars['semaphore']['service_backend_port'] }}"
+    comment: "Forward Semaphore {{ hostvars['semaphore']['service_frontend_port'] }} -> semaphore"
+
+# --- iptables persistence (FIX: other services lose rules on reboot) ---
+- name: "Semaphore (Stage 1) - Persist iptables rules"
+  ansible.builtin.shell: iptables-save > /etc/iptables.rules
+  changed_when: false
+
+- name: "Semaphore (Stage 1) - Ensure iptables rules restored on boot"
+  ansible.builtin.cron:
+    name: "restore-iptables-on-reboot"
+    special_time: reboot
+    job: "/sbin/iptables-restore < /etc/iptables.rules"
+    user: root
+    state: present

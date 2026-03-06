@@ -1,0 +1,167 @@
+---
+# ==============================================================================
+# Stage 3: Configure Semaphore service and validate integrations
+# ==============================================================================
+# Runs on: semaphore (inside LXC container)
+#
+# Improvements over older services:
+#   - Config template deployed before first start (no race condition)
+#   - Admin user created via CLI (deterministic, no API timing issues)
+#   - SSH key generated for Semaphore → Proxmox host access
+#   - HTTP health check with proper retry and status evaluation
+#   - No failed_when: false without following result check
+# ==============================================================================
+
+# --- Generate crypto keys for config (deterministic from admin password) ---
+- name: "Semaphore (Stage 3) - Generate cookie hash"
+  ansible.builtin.set_fact:
+    semaphore_cookie_hash: "{{ (semaphore_admin_password ~ 'cookie_hash_salt') | hash('sha256') }}"
+
+- name: "Semaphore (Stage 3) - Generate cookie encryption key"
+  ansible.builtin.set_fact:
+    semaphore_cookie_encryption: "{{ (semaphore_admin_password ~ 'cookie_enc_salt') | hash('sha256') | truncate(32, True, '') }}"
+
+- name: "Semaphore (Stage 3) - Generate access key encryption"
+  ansible.builtin.set_fact:
+    semaphore_access_key_encryption: "{{ (semaphore_admin_password ~ 'access_key_salt') | hash('sha256') | truncate(32, True, '') }}"
+
+# --- Deploy configuration ---
+- name: "Semaphore (Stage 3) - Deploy config file"
+  ansible.builtin.template:
+    src: templates/semaphore_config.json.j2
+    dest: "{{ semaphore_config_path }}"
+    owner: root
+    group: root
+    mode: '0600'
+  register: semaphore_config_deployed
+
+# --- Deploy systemd service ---
+- name: "Semaphore (Stage 3) - Deploy systemd service unit"
+  ansible.builtin.template:
+    src: templates/semaphore.service.j2
+    dest: /etc/systemd/system/semaphore.service
+    mode: '0644'
+  register: semaphore_service_deployed
+
+- name: "Semaphore (Stage 3) - Reload systemd when unit changed"
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  when: semaphore_service_deployed.changed
+
+- name: "Semaphore (Stage 3) - Restart Semaphore when config changed"
+  ansible.builtin.systemd:
+    name: semaphore
+    state: restarted
+  when: semaphore_config_deployed.changed or semaphore_service_deployed.changed
+
+- name: "Semaphore (Stage 3) - Ensure Semaphore is enabled and running"
+  ansible.builtin.systemd:
+    name: semaphore
+    enabled: yes
+    state: started
+
+# --- Wait for service readiness ---
+- name: "Semaphore (Stage 3) - Wait for Semaphore port"
+  ansible.builtin.wait_for:
+    port: "{{ service_backend_port }}"
+    timeout: 45
+    delay: 3
+
+- name: "Semaphore (Stage 3) - Probe Semaphore HTTP endpoint"
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ service_backend_port }}/api/ping"
+    method: GET
+    status_code: [200, 204]
+    timeout: 10
+  register: semaphore_http_probe
+  retries: 5
+  delay: 3
+  until: semaphore_http_probe.status | default(0) in [200, 204]
+
+- name: "Semaphore (Stage 3) - Show HTTP probe result"
+  ansible.builtin.debug:
+    msg: "Semaphore HTTP probe: {{ semaphore_http_probe.status | default('n/a') }}"
+
+# --- Admin user creation (CLI-based, idempotent) ---
+- name: "Semaphore (Stage 3) - Check if admin user exists"
+  ansible.builtin.command: >-
+    semaphore user list --config {{ semaphore_config_path }}
+  register: semaphore_user_list
+  changed_when: false
+  failed_when: false
+
+- name: "Semaphore (Stage 3) - Create admin user"
+  ansible.builtin.command: >-
+    semaphore user add
+    --admin
+    --login {{ semaphore_admin_user }}
+    --name "{{ semaphore_admin_name }}"
+    --email {{ semaphore_admin_email }}
+    --password {{ semaphore_admin_password }}
+    --config {{ semaphore_config_path }}
+  when: semaphore_admin_user not in (semaphore_user_list.stdout | default(''))
+  register: semaphore_user_created
+  changed_when: semaphore_user_created.rc == 0
+
+- name: "Semaphore (Stage 3) - Show admin user result"
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        'Admin user created.'
+        if (semaphore_user_created.changed | default(false))
+        else 'Admin user already exists.'
+      }}
+
+# --- SSH key pair for Semaphore → target machine access ---
+- name: "Semaphore (Stage 3) - Generate SSH key pair for Semaphore"
+  ansible.builtin.command: >-
+    ssh-keygen -t ed25519 -f {{ semaphore_data_dir }}/ssh_key -N "" -C "semaphore@homelab"
+  args:
+    creates: "{{ semaphore_data_dir }}/ssh_key"
+
+- name: "Semaphore (Stage 3) - Read Semaphore public key"
+  ansible.builtin.slurp:
+    src: "{{ semaphore_data_dir }}/ssh_key.pub"
+  register: semaphore_ssh_pubkey
+
+- name: "Semaphore (Stage 3) - Show SSH public key for target machine setup"
+  ansible.builtin.debug:
+    msg: >-
+      Semaphore SSH public key (add to target machines' ~/.ssh/authorized_keys):
+      {{ semaphore_ssh_pubkey.content | b64decode | trim }}
+
+# --- Validate Semaphore API login ---
+- name: "Semaphore (Stage 3) - Authenticate via API"
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ service_backend_port }}/api/auth/login"
+    method: POST
+    body_format: json
+    body:
+      auth: "{{ semaphore_admin_user }}"
+      password: "{{ semaphore_admin_password }}"
+    status_code: [200, 204]
+    timeout: 10
+  register: semaphore_auth_result
+  retries: 3
+  delay: 2
+  until: semaphore_auth_result.status | default(0) in [200, 204]
+  no_log: true
+
+- name: "Semaphore (Stage 3) - Show API authentication result"
+  ansible.builtin.debug:
+    msg: "Semaphore API login successful (HTTP {{ semaphore_auth_result.status }})."
+
+# --- Validate Proxmox host reachability from container ---
+- name: "Semaphore (Stage 3) - Check Proxmox host SSH reachability"
+  ansible.builtin.wait_for:
+    host: "{{ network_gateway | regex_replace('\\.[0-9]+$', '.91') }}"
+    port: 22
+    timeout: 10
+  register: semaphore_proxmox_ssh_probe
+  failed_when: false
+
+- name: "Semaphore (Stage 3) - Show Proxmox SSH probe result"
+  ansible.builtin.debug:
+    msg: >-
+      Proxmox host SSH {{ 'reachable' if (semaphore_proxmox_ssh_probe.state | default('')) == 'started' else 'NOT reachable' }}
+      from Semaphore container.

@@ -1,0 +1,103 @@
+---
+# ==============================================================================
+# Stage 4: Backup setup and service verification
+# ==============================================================================
+# Runs on: semaphore (inside LXC container)
+#
+# Improvements over older services:
+#   - No service stop during backup (BoltDB hot-copy)
+#   - Handlers NOT duplicated from Stage 3
+#   - Initial backup failure properly logged (not silently swallowed)
+#   - Port + HTTP health check (not just port)
+# ==============================================================================
+
+# --- Deploy backup script ---
+- name: "Semaphore (Stage 4) - Deploy backup script"
+  ansible.builtin.template:
+    src: templates/semaphore_backup.sh.j2
+    dest: "{{ semaphore_backup_script_path }}"
+    owner: root
+    group: root
+    mode: '0750'
+
+# --- Deploy restore script ---
+- name: "Semaphore (Stage 4) - Deploy restore script"
+  ansible.builtin.template:
+    src: templates/semaphore_restore.sh.j2
+    dest: "{{ semaphore_restore_script_path }}"
+    owner: root
+    group: root
+    mode: '0750'
+
+# --- Restore-on-boot systemd unit ---
+- name: "Semaphore (Stage 4) - Deploy restore-on-boot service"
+  ansible.builtin.template:
+    src: templates/semaphore-restore.service.j2
+    dest: /etc/systemd/system/semaphore-restore.service
+    mode: '0644'
+  register: semaphore_restore_service_deployed
+
+- name: "Semaphore (Stage 4) - Reload systemd for restore service"
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  when: semaphore_restore_service_deployed.changed
+
+- name: "Semaphore (Stage 4) - Enable restore-on-boot service"
+  ansible.builtin.systemd:
+    name: semaphore-restore
+    enabled: yes
+
+# --- Periodic backup cron ---
+- name: "Semaphore (Stage 4) - Configure periodic backup cron"
+  ansible.builtin.cron:
+    name: "Semaphore backup to NAS"
+    minute: "{{ semaphore_backup_cron_minute }}"
+    hour: "{{ semaphore_backup_cron_hour }}"
+    job: "{{ semaphore_backup_script_path }} 2>&1 | logger -t semaphore-backup-cron"
+    user: root
+    state: present
+
+# --- Final service health verification ---
+- name: "Semaphore (Stage 4) - Ensure Semaphore service is active"
+  ansible.builtin.systemd:
+    name: semaphore
+    enabled: yes
+    state: started
+
+- name: "Semaphore (Stage 4) - Verify Semaphore is listening"
+  ansible.builtin.wait_for:
+    port: "{{ service_backend_port }}"
+    timeout: 30
+
+- name: "Semaphore (Stage 4) - HTTP health check"
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ service_backend_port }}/api/ping"
+    method: GET
+    status_code: [200, 204]
+    timeout: 10
+  register: semaphore_final_health
+  retries: 3
+  delay: 2
+  until: semaphore_final_health.status | default(0) in [200, 204]
+
+- name: "Semaphore (Stage 4) - Show service status"
+  ansible.builtin.command: systemctl status semaphore --no-pager -l
+  register: semaphore_status
+  changed_when: false
+
+- name: "Semaphore (Stage 4) - Print service status"
+  ansible.builtin.debug:
+    msg: "{{ semaphore_status.stdout_lines }}"
+
+# --- Initial backup ---
+- name: "Semaphore (Stage 4) - Run initial backup to NAS"
+  ansible.builtin.command: "{{ semaphore_backup_script_path }}"
+  register: semaphore_initial_backup
+  changed_when: false
+  failed_when: false
+
+- name: "Semaphore (Stage 4) - Show initial backup result"
+  ansible.builtin.debug:
+    msg: >-
+      Initial backup {{ 'succeeded' if semaphore_initial_backup.rc == 0 else 'FAILED (rc=' ~ semaphore_initial_backup.rc ~ ')' }}.
+      {{ semaphore_initial_backup.stderr | default('') }}

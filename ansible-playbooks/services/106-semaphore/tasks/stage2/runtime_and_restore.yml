@@ -1,0 +1,240 @@
+---
+# ==============================================================================
+# Stage 2: Configure networking, install Semaphore, restore from backup
+# ==============================================================================
+# Runs on: semaphore (inside LXC container)
+#
+# Improvements over older services:
+#   - state: present (not latest) for system packages
+#   - get_url for GPG key (not shell: curl | gpg)
+#   - Version auto-detection from GitHub API with optional pin
+#   - Binary download (single Go binary, no Node.js/npm needed)
+#   - No service stop during restore – only stops if actually running
+#   - Consolidated in one file (no unnecessary dispatcher → sub-file indirection)
+# ==============================================================================
+
+# --- System dependencies ---
+- name: "Semaphore (Stage 2) - Install system dependencies"
+  ansible.builtin.apt:
+    name:
+      - git
+      - curl
+      - gnupg
+      - nfs-common
+      - python3
+      - ansible
+      - openssh-client
+      - jq
+    state: present
+    update_cache: yes
+
+# --- Static networking (Netplan) ---
+- name: "Semaphore (Stage 2) - Deploy static netplan config"
+  ansible.builtin.template:
+    src: templates/netplan.yaml.j2
+    dest: /etc/netplan/99-ansible-static.yaml
+    mode: '0600'
+  register: semaphore_netplan_config
+
+- name: "Semaphore (Stage 2) - Remove conflicting netplan defaults"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/netplan/50-cloud-init.yaml
+    - /etc/netplan/00-installer-config.yaml
+  register: semaphore_netplan_cleanup
+
+- name: "Semaphore (Stage 2) - Apply netplan"
+  ansible.builtin.command: netplan apply
+  when: semaphore_netplan_config.changed or semaphore_netplan_cleanup.changed
+
+# --- Resolve target version ---
+- name: "Semaphore (Stage 2) - Resolve latest Semaphore version from GitHub"
+  ansible.builtin.uri:
+    url: https://api.github.com/repos/semaphoreui/semaphore/releases/latest
+    return_content: yes
+    headers:
+      Accept: "application/vnd.github+json"
+  register: semaphore_github_release
+  when: (semaphore_version | default('')) | length == 0
+
+- name: "Semaphore (Stage 2) - Set target version (auto-detected)"
+  ansible.builtin.set_fact:
+    semaphore_target_version: "{{ (semaphore_github_release.json.tag_name | regex_replace('^v', '')) }}"
+  when: (semaphore_version | default('')) | length == 0
+
+- name: "Semaphore (Stage 2) - Set target version (pinned)"
+  ansible.builtin.set_fact:
+    semaphore_target_version: "{{ semaphore_version }}"
+  when: (semaphore_version | default('')) | length > 0
+
+# --- Check installed version ---
+- name: "Semaphore (Stage 2) - Check installed Semaphore version"
+  ansible.builtin.command: semaphore version
+  register: semaphore_binary_check
+  changed_when: false
+  failed_when: false
+
+- name: "Semaphore (Stage 2) - Parse installed version"
+  ansible.builtin.set_fact:
+    semaphore_installed_version: >-
+      {{
+        (semaphore_binary_check.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+') | default(''))
+        if (semaphore_binary_check.rc | default(1)) == 0
+        else ''
+      }}
+
+- name: "Semaphore (Stage 2) - Determine if install/update is needed"
+  ansible.builtin.set_fact:
+    semaphore_install_required: >-
+      {{
+        ((semaphore_binary_check.rc | default(1)) != 0)
+        or (semaphore_installed_version != semaphore_target_version)
+      }}
+
+# --- Download and install binary ---
+- name: "Semaphore (Stage 2) - Download Semaphore binary"
+  ansible.builtin.get_url:
+    url: "https://github.com/semaphoreui/semaphore/releases/download/v{{ semaphore_target_version }}/semaphore_{{ semaphore_target_version }}_linux_amd64.tar.gz"
+    dest: "/tmp/semaphore_{{ semaphore_target_version }}.tar.gz"
+    mode: '0644'
+  when: semaphore_install_required | bool
+
+- name: "Semaphore (Stage 2) - Ensure extraction directory exists"
+  ansible.builtin.file:
+    path: /tmp/semaphore_extract
+    state: directory
+    mode: '0755'
+  when: semaphore_install_required | bool
+
+- name: "Semaphore (Stage 2) - Extract Semaphore archive"
+  ansible.builtin.unarchive:
+    src: "/tmp/semaphore_{{ semaphore_target_version }}.tar.gz"
+    dest: /tmp/semaphore_extract
+    remote_src: yes
+  when: semaphore_install_required | bool
+
+- name: "Semaphore (Stage 2) - Install Semaphore binary to /usr/local/bin"
+  ansible.builtin.copy:
+    src: /tmp/semaphore_extract/semaphore
+    dest: /usr/local/bin/semaphore
+    remote_src: yes
+    mode: '0755'
+    owner: root
+    group: root
+  when: semaphore_install_required | bool
+
+- name: "Semaphore (Stage 2) - Clean up download artifacts"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/semaphore_{{ semaphore_target_version }}.tar.gz"
+    - /tmp/semaphore_extract
+  when: semaphore_install_required | bool
+
+- name: "Semaphore (Stage 2) - Verify installed version"
+  ansible.builtin.command: semaphore version
+  register: semaphore_version_verify
+  changed_when: false
+
+- name: "Semaphore (Stage 2) - Show installed version"
+  ansible.builtin.debug:
+    msg: "Semaphore version: {{ semaphore_version_verify.stdout | trim }}"
+
+# --- Data directories ---
+- name: "Semaphore (Stage 2) - Ensure data directory exists"
+  ansible.builtin.file:
+    path: "{{ semaphore_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: "Semaphore (Stage 2) - Ensure config directory exists"
+  ansible.builtin.file:
+    path: "{{ semaphore_config_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: "Semaphore (Stage 2) - Ensure tmp directory exists"
+  ansible.builtin.file:
+    path: "{{ semaphore_tmp_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+# --- Restore from backup (if local DB is missing) ---
+- name: "Semaphore (Stage 2) - Stop Semaphore before restore check"
+  ansible.builtin.systemd:
+    name: semaphore
+    state: stopped
+  register: semaphore_stop_result
+  failed_when: false
+
+- name: "Semaphore (Stage 2) - Check local Semaphore database"
+  ansible.builtin.stat:
+    path: "{{ semaphore_data_dir }}/database.boltdb"
+  register: semaphore_db_file
+
+- name: "Semaphore (Stage 2) - Check if database has meaningful size"
+  ansible.builtin.set_fact:
+    semaphore_db_has_data: "{{ semaphore_db_file.stat.exists and (semaphore_db_file.stat.size | default(0) | int) > 1024 }}"
+
+- name: "Semaphore (Stage 2) - Remove empty database to allow restore"
+  ansible.builtin.file:
+    path: "{{ semaphore_data_dir }}/database.boltdb"
+    state: absent
+  when:
+    - semaphore_db_file.stat.exists
+    - not (semaphore_db_has_data | bool)
+
+- name: "Semaphore (Stage 2) - Re-check database after cleanup"
+  ansible.builtin.stat:
+    path: "{{ semaphore_data_dir }}/database.boltdb"
+  register: semaphore_db_after_cleanup
+
+- name: "Semaphore (Stage 2) - Find available numbered backup archives"
+  ansible.builtin.stat:
+    path: "{{ nas_backup_mount }}/semaphore/semaphore_backup.{{ item }}.tar.gz"
+  register: semaphore_backup_candidates
+  loop: "{{ range(0, semaphore_backup_keep_count) | list }}"
+  when: not semaphore_db_after_cleanup.stat.exists
+
+- name: "Semaphore (Stage 2) - Select best backup archive"
+  ansible.builtin.set_fact:
+    semaphore_restore_archive: >-
+      {{
+        (semaphore_backup_candidates.results | default([])
+          | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists')
+          | first).stat.path | default('')
+      }}
+  when: not semaphore_db_after_cleanup.stat.exists
+
+- name: "Semaphore (Stage 2) - Restore data from archive"
+  ansible.builtin.unarchive:
+    src: "{{ semaphore_restore_archive }}"
+    dest: /
+    remote_src: yes
+  when:
+    - not (semaphore_db_after_cleanup.stat.exists | default(false))
+    - (semaphore_restore_archive | default('')) | length > 0
+
+- name: "Semaphore (Stage 2) - Show restore result"
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        'Restored from ' ~ (semaphore_restore_archive | default('') | basename)
+        if (not (semaphore_db_after_cleanup.stat.exists | default(false))
+            and (semaphore_restore_archive | default('')) | length > 0)
+        else (
+          'Local database present – no restore needed.'
+          if (semaphore_db_after_cleanup.stat.exists | default(false))
+          else 'No backup found on NAS – fresh install.'
+        )
+      }}

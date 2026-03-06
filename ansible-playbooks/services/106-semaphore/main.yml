@@ -1,0 +1,94 @@
+---
+# ==============================================================================
+# Playbook: Services - Ansible Semaphore (staged)
+# ==============================================================================
+# Ansible Semaphore provides a Web UI for managing Ansible playbook deployments
+# on remote physical/virtual machines. Single Go binary, BoltDB storage, ~50MB RAM.
+#
+# Stage 1: Provision LXC container on Proxmox host
+# Stage 2: Install Semaphore binary, configure networking, restore from backup
+# Stage 3: Configure service, create admin user, SSH keys, integration checks
+# Stage 4: Backup infrastructure, cron, final health verification
+#
+# Improvements over older services:
+#   - No legacy/dead code files
+#   - No unnecessary dispatcher files (provision.yml → provision_container.yml)
+#   - No duplicated handlers across stages
+#   - iptables rules persisted
+#   - Consistent FQCN (ansible.builtin.*) usage
+#   - NAS backup dir created once (Stage 1), not duplicated
+#   - mode '0755' on backup dirs (not '0777')
+#   - Hot backup (no service stop, BoltDB supports it)
+#   - Health checks: Port + HTTP probe (not just port)
+#   - state: present (not latest) for system packages
+# ==============================================================================
+
+# ============================================================
+# STAGE 1 – Provision LXC container on Proxmox host
+# ============================================================
+- name: "Semaphore (Stage 1) - Provision LXC container"
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  tags: [stage1, provision]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    - name: "Semaphore (Stage 1) - Provision & host-side networking"
+      include_tasks: tasks/stage1/provision.yml
+
+# ============================================================
+# STAGE 2 – Runtime provisioning inside container
+# ============================================================
+- name: "Semaphore (Stage 2) - Install runtime & restore data"
+  hosts: semaphore
+  become: yes
+  gather_facts: yes
+  tags: [stage2, deploy]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    - name: "Semaphore (Stage 2) - Network, install, restore"
+      include_tasks: tasks/stage2/runtime_and_restore.yml
+
+# ============================================================
+# STAGE 3 – Service configuration & integration checks
+# ============================================================
+- name: "Semaphore (Stage 3) - Configure service and integrations"
+  hosts: semaphore
+  become: yes
+  gather_facts: yes
+  tags: [stage3]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  handlers:
+    - name: Restart Semaphore
+      ansible.builtin.systemd:
+        name: semaphore
+        state: restarted
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+  tasks:
+    - name: "Semaphore (Stage 3) - Configure and validate"
+      include_tasks: tasks/stage3/configure_and_validate.yml
+
+# ============================================================
+# STAGE 4 – Backup infrastructure & health verification
+# ============================================================
+- name: "Semaphore (Stage 4) - Backup setup and verify service"
+  hosts: semaphore
+  become: yes
+  gather_facts: yes
+  tags: [stage4, backup]
+  vars_files:
+    - "../../inventory/group_vars/all.yml"
+
+  tasks:
+    - name: "Semaphore (Stage 4) - Backup scripts, service check, initial backup"
+      include_tasks: tasks/stage4/backup_and_verify.yml
