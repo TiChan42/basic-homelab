@@ -82,15 +82,27 @@
   ansible.builtin.debug:
     msg: "Semaphore HTTP probe: {{ semaphore_http_probe.status | default('n/a') }}"
 
-# --- Admin user creation (CLI-based, idempotent) ---
-- name: "Semaphore (Stage 3) - Check if admin user exists"
-  ansible.builtin.command: >-
-    semaphore user list --config {{ semaphore_config_path }}
-  register: semaphore_user_list
-  changed_when: false
-  failed_when: false
+# --- Admin user creation (API-based – CLI commands cause BoltDB lock conflict) ---
+- name: "Semaphore (Stage 3) - Try API login to check if admin user exists"
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ service_backend_port }}/api/auth/login"
+    method: POST
+    body_format: json
+    body:
+      auth: "{{ semaphore_admin_user }}"
+      password: "{{ semaphore_admin_password }}"
+    status_code: [200, 204, 401, 403]
+    timeout: 10
+  register: semaphore_login_check
+  no_log: true
 
-- name: "Semaphore (Stage 3) - Create admin user"
+- name: "Semaphore (Stage 3) - Stop Semaphore to create admin user via CLI"
+  ansible.builtin.systemd:
+    name: semaphore
+    state: stopped
+  when: semaphore_login_check.status | default(0) not in [200, 204]
+
+- name: "Semaphore (Stage 3) - Create admin user via CLI (DB unlocked)"
   ansible.builtin.command: >-
     semaphore user add
     --admin
@@ -99,9 +111,22 @@
     --email {{ semaphore_admin_email }}
     --password {{ semaphore_admin_password }}
     --config {{ semaphore_config_path }}
-  when: semaphore_admin_user not in (semaphore_user_list.stdout | default(''))
+  when: semaphore_login_check.status | default(0) not in [200, 204]
   register: semaphore_user_created
   changed_when: semaphore_user_created.rc == 0
+
+- name: "Semaphore (Stage 3) - Restart Semaphore after user creation"
+  ansible.builtin.systemd:
+    name: semaphore
+    state: started
+  when: semaphore_login_check.status | default(0) not in [200, 204]
+
+- name: "Semaphore (Stage 3) - Wait for Semaphore port after restart"
+  ansible.builtin.wait_for:
+    port: "{{ service_backend_port }}"
+    timeout: 30
+    delay: 2
+  when: semaphore_login_check.status | default(0) not in [200, 204]
 
 - name: "Semaphore (Stage 3) - Show admin user result"
   ansible.builtin.debug:
