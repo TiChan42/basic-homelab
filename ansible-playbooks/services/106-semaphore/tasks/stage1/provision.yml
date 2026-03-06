@@ -34,7 +34,7 @@
   ansible.builtin.file:
     path: "{{ nas_backup_mount }}/semaphore"
     state: directory
-    mode: '0755'
+    mode: '0777'
 
 # --- Rootfs validation (prevents silent failures from bad config) ---
 - name: "Semaphore (Stage 1) - Normalize rootfs configuration"
